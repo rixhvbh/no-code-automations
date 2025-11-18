@@ -1,0 +1,730 @@
+{
+  "name": "Candidate Deduplication & Data Enrichment System",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "candidate-deduplication-enrichment",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-trigger-001",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "webhookId": "candidate-dedup-webhook"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Input Validation Node\nconst inputData = $input.first().json;\nconst requestData = inputData.body || inputData;\n\n// Validate required structure\nif (!requestData.candidates || !Array.isArray(requestData.candidates)) {\n  throw new Error('candidates array is required');\n}\n\nif (requestData.candidates.length === 0) {\n  throw new Error('candidates array cannot be empty');\n}\n\n// Validate each candidate record\nconst emailRegex = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/;\nconst validated = [];\nconst invalid = [];\n\nfor (const candidate of requestData.candidates) {\n  // Check required fields\n  if (!candidate.first_name || !candidate.last_name || !candidate.email) {\n    invalid.push({\n      candidate,\n      reason: 'Missing required fields (first_name, last_name, email)'\n    });\n    continue;\n  }\n\n  // Validate email format\n  if (!emailRegex.test(candidate.email)) {\n    invalid.push({\n      candidate,\n      reason: 'Invalid email format'\n    });\n    continue;\n  }\n\n  // Valid candidate\n  validated.push(candidate);\n}\n\n// Return validation results\nreturn [{\n  json: {\n    valid_candidates: validated,\n    invalid_candidates: invalid,\n    valid_count: validated.length,\n    invalid_count: invalid.length,\n    total_uploaded: requestData.candidates.length,\n    batch_id: requestData.upload_batch_id || `batch_${Date.now()}`,\n    uploaded_by: requestData.uploaded_by || 'system',\n    validation_timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "input-validation-002",
+      "name": "Input Validation",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Normalize Fields Function\nconst data = $input.first().json;\nconst candidates = data.valid_candidates;\n\nfunction normalizePhone(phone) {\n  if (!phone) return '';\n  // Remove all non-numeric characters\n  const cleaned = phone.replace(/[^0-9]/g, '');\n  // Add +1 for US numbers if not present\n  if (cleaned.length === 10) {\n    return `+1${cleaned}`;\n  }\n  if (cleaned.length === 11 && cleaned.startsWith('1')) {\n    return `+${cleaned}`;\n  }\n  return `+${cleaned}`;\n}\n\nfunction capitalizeName(name) {\n  if (!name) return '';\n  return name\n    .toLowerCase()\n    .split(' ')\n    .map(word => word.charAt(0).toUpperCase() + word.slice(1))\n    .join(' ')\n    .trim();\n}\n\nfunction normalizeEmail(email) {\n  if (!email) return '';\n  return email.toLowerCase().trim();\n}\n\n// Normalize all candidates\nconst normalized = candidates.map(candidate => {\n  return {\n    ...candidate,\n    first_name: capitalizeName(candidate.first_name),\n    last_name: capitalizeName(candidate.last_name),\n    full_name: `${capitalizeName(candidate.first_name)} ${capitalizeName(candidate.last_name)}`,\n    email: normalizeEmail(candidate.email),\n    phone: normalizePhone(candidate.phone),\n    company: candidate.company ? candidate.company.trim() : '',\n    job_title: candidate.job_title ? candidate.job_title.trim() : '',\n    location: candidate.location ? candidate.location.trim() : '',\n    normalized_at: new Date().toISOString()\n  };\n});\n\nreturn [{\n  json: {\n    ...data,\n    normalized_candidates: normalized,\n    normalization_complete: true\n  }\n}];"
+      },
+      "id": "normalize-fields-003",
+      "name": "Normalize Fields",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": "={{$env.GOOGLE_SHEETS_MASTER_DB_ID}}",
+        "sheetName": "Master_Candidates",
+        "options": {
+          "dataLocationOnSheet": "headerRow"
+        }
+      },
+      "id": "load-existing-db-004",
+      "name": "Load Existing Database",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [900, 300],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "google-sheets-credential",
+          "name": "Google Sheets Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Fuzzy Matching Algorithm using Levenshtein Distance\nconst newCandidatesData = $input.item(0).json;\nconst existingCandidatesData = $input.item(1).json;\n\nconst newCandidates = newCandidatesData.normalized_candidates || [];\nconst existingCandidates = Array.isArray(existingCandidatesData) ? existingCandidatesData : [];\n\n// Levenshtein distance algorithm\nfunction levenshteinDistance(str1, str2) {\n  const a = str1.toLowerCase();\n  const b = str2.toLowerCase();\n  const matrix = [];\n\n  for (let i = 0; i <= a.length; i++) {\n    matrix[i] = [i];\n  }\n\n  for (let j = 0; j <= b.length; j++) {\n    matrix[0][j] = j;\n  }\n\n  for (let i = 1; i <= a.length; i++) {\n    for (let j = 1; j <= b.length; j++) {\n      const cost = a[i - 1] === b[j - 1] ? 0 : 1;\n      matrix[i][j] = Math.min(\n        matrix[i - 1][j] + 1,\n        matrix[i][j - 1] + 1,\n        matrix[i - 1][j - 1] + cost\n      );\n    }\n  }\n\n  return matrix[a.length][b.length];\n}\n\n// Calculate similarity percentage\nfunction similarityScore(str1, str2) {\n  if (!str1 || !str2) return 0;\n  const maxLen = Math.max(str1.length, str2.length);\n  if (maxLen === 0) return 100;\n  const distance = levenshteinDistance(str1, str2);\n  return ((maxLen - distance) / maxLen) * 100;\n}\n\n// Find duplicates\nconst results = [];\nconst SIMILARITY_THRESHOLD = 85;\n\nfor (const newCandidate of newCandidates) {\n  let isDuplicate = false;\n  let matchedRecord = null;\n  let matchReason = '';\n\n  for (const existing of existingCandidates) {\n    // Rule 1: Exact email match\n    if (newCandidate.email && existing.email &&\n        newCandidate.email === existing.email) {\n      isDuplicate = true;\n      matchedRecord = existing;\n      matchReason = 'exact_email_match';\n      break;\n    }\n\n    // Rule 2: High name similarity + exact phone match\n    const nameSimilarity = similarityScore(\n      newCandidate.full_name,\n      existing.full_name || `${existing.first_name} ${existing.last_name}`\n    );\n\n    if (nameSimilarity >= SIMILARITY_THRESHOLD &&\n        newCandidate.phone && existing.phone &&\n        newCandidate.phone === existing.phone) {\n      isDuplicate = true;\n      matchedRecord = existing;\n      matchReason = `name_similarity_${nameSimilarity.toFixed(1)}%_phone_match`;\n      break;\n    }\n  }\n\n  results.push({\n    candidate: newCandidate,\n    isDuplicate: isDuplicate,\n    matchedRecord: matchedRecord,\n    matchReason: matchReason,\n    processed_at: new Date().toISOString()\n  });\n}\n\n// Return results with metadata\nreturn [{\n  json: {\n    results: results,\n    total_processed: results.length,\n    duplicates_found: results.filter(r => r.isDuplicate).length,\n    new_candidates: results.filter(r => !r.isDuplicate).length,\n    batch_id: newCandidatesData.batch_id,\n    matching_complete: true\n  }\n}];"
+      },
+      "id": "fuzzy-matching-005",
+      "name": "Fuzzy Matching Algorithm",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Split results into individual items for routing\nconst data = $input.first().json;\nconst results = data.results || [];\n\n// Return each result as separate item\nreturn results.map(result => ({\n  json: {\n    ...result.candidate,\n    isDuplicate: result.isDuplicate,\n    matchedRecord: result.matchedRecord,\n    matchReason: result.matchReason,\n    batch_id: data.batch_id\n  }\n}));"
+      },
+      "id": "split-results-006",
+      "name": "Split Results",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1340, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$json.isDuplicate}}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "route-duplicate-007",
+      "name": "Route: Duplicate?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1560, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Merge Records Function - Combine old and new data\nconst newData = $input.first().json;\nconst existingData = newData.matchedRecord || {};\n\n// Merge strategy: Prefer newer non-null/non-empty values\nfunction mergeValue(newVal, oldVal) {\n  if (newVal !== null && newVal !== undefined && newVal !== '') {\n    return newVal;\n  }\n  return oldVal;\n}\n\nconst merged = {\n  // Keep existing ID\n  candidate_id: existingData.candidate_id,\n  \n  // Merge all fields\n  first_name: mergeValue(newData.first_name, existingData.first_name),\n  last_name: mergeValue(newData.last_name, existingData.last_name),\n  full_name: mergeValue(newData.full_name, existingData.full_name),\n  email: mergeValue(newData.email, existingData.email),\n  phone: mergeValue(newData.phone, existingData.phone),\n  company: mergeValue(newData.company, existingData.company),\n  job_title: mergeValue(newData.job_title, existingData.job_title),\n  resume_text: mergeValue(newData.resume_text, existingData.resume_text),\n  linkedin_url: mergeValue(newData.linkedin_url, existingData.linkedin_url),\n  years_experience: mergeValue(newData.years_experience, existingData.years_experience),\n  location: mergeValue(newData.location, existingData.location),\n  \n  // Merge skills (combine unique values)\n  skills: (() => {\n    const newSkills = Array.isArray(newData.skills) ? newData.skills : \n                     (newData.skills ? newData.skills.split(',').map(s => s.trim()) : []);\n    const oldSkills = Array.isArray(existingData.skills) ? existingData.skills :\n                     (existingData.skills ? existingData.skills.split(',').map(s => s.trim()) : []);\n    const combined = [...new Set([...newSkills, ...oldSkills])];\n    return combined.filter(s => s).join(', ');\n  })(),\n  \n  // Metadata\n  source: newData.source,\n  created_date: existingData.created_date,\n  last_updated: new Date().toISOString(),\n  update_source: 'deduplication_merge',\n  match_reason: newData.matchReason,\n  action: 'updated',\n  batch_id: newData.batch_id\n};\n\nreturn [{ json: merged }];"
+      },
+      "id": "merge-records-008",
+      "name": "Merge Records",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1780, 200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.neverbounce.com/v4/single/check",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "neverBounceApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{$env.NEVERBOUNCE_API_KEY}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "email",
+              "value": "={{$json.email}}"
+            },
+            {
+              "name": "timeout",
+              "value": "5"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "check-email-009",
+      "name": "Check Email Validity",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1780, 400],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "functionCode": "// Parse NeverBounce response\nconst candidate = $input.first().json;\nconst response = candidate.result || {};\n\nlet emailStatus = 'unchecked';\n\nif (response.result) {\n  emailStatus = response.result; // 'valid', 'invalid', 'disposable', 'unknown'\n}\n\nreturn [{\n  json: {\n    ...candidate,\n    email_status: emailStatus,\n    email_checked_at: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "parse-email-result-010",
+      "name": "Parse Email Result",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [2000, 400]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://company.clearbit.com/v2/companies/find?domain={{$json.company}}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clearbitApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.CLEARBIT_API_KEY}}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "enrich-company-011",
+      "name": "Enrich Company Data",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [2220, 400],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "functionCode": "// Parse Clearbit company data\nconst candidate = $input.first().json;\nconst response = candidate || {};\n\nlet companyData = {};\n\nif (response.name) {\n  companyData = {\n    company_size: response.metrics?.employees || null,\n    company_industry: response.category?.industry || '',\n    company_location: response.geo?.city || '',\n    company_logo: response.logo || '',\n    company_domain: response.domain || ''\n  };\n}\n\nreturn [{\n  json: {\n    ...candidate,\n    ...companyData,\n    company_enriched: !!response.name\n  }\n}];"
+      },
+      "id": "parse-company-012",
+      "name": "Parse Company Data",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [2440, 400]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://nubela.co/proxycurl/api/v2/search/person?first_name={{$json.first_name}}&last_name={{$json.last_name}}&company={{$json.company}}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "proxycurlApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.PROXYCURL_API_KEY}}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "find-linkedin-013",
+      "name": "Find LinkedIn Profile",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [2660, 400],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "functionCode": "// Parse Proxycurl LinkedIn response\nconst candidate = $input.first().json;\nconst response = candidate.results || [];\n\nlet linkedinData = {\n  linkedin_url: candidate.linkedin_url || '',\n  profile_pic_url: ''\n};\n\nif (response.length > 0 && response[0].linkedin_profile_url) {\n  linkedinData.linkedin_url = response[0].linkedin_profile_url;\n  linkedinData.profile_pic_url = response[0].profile_pic_url || '';\n}\n\nreturn [{\n  json: {\n    ...candidate,\n    ...linkedinData,\n    linkedin_found: !!linkedinData.linkedin_url\n  }\n}];"
+      },
+      "id": "parse-linkedin-014",
+      "name": "Parse LinkedIn Data",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [2880, 400]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o-mini",
+        "prompt": "=Extract technical skills from this resume text. Return as comma-separated list.\\n\\nResume: {{$json.resume_text}}\\n\\nOutput format: Python, AWS, Docker, PostgreSQL\\n\\nRules:\\n- Only technical skills (programming languages, tools, platforms)\\n- No soft skills\\n- No duplicates\\n- Maximum 20 skills",
+        "options": {
+          "temperature": 0.3,
+          "maxTokens": 200
+        }
+      },
+      "id": "extract-skills-015",
+      "name": "Extract Skills from Resume",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1.3,
+      "position": [3100, 400],
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-credential",
+          "name": "OpenAI Account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "functionCode": "// Parse GPT-4 skills extraction\nconst candidate = $input.first().json;\nconst gptResponse = candidate.message?.content || '';\n\nlet extractedSkills = '';\n\nif (gptResponse) {\n  // Clean up the response\n  extractedSkills = gptResponse\n    .split('\\n')\n    .filter(line => line.trim())\n    .join(', ')\n    .replace(/[\"\\[\\]]/g, '')\n    .trim();\n}\n\n// Merge with existing skills if any\nconst existingSkills = candidate.skills || '';\nconst allSkills = [existingSkills, extractedSkills]\n  .filter(s => s)\n  .join(', ');\n\nreturn [{\n  json: {\n    ...candidate,\n    skills: allSkills,\n    extracted_skills: extractedSkills,\n    skills_extracted: !!extractedSkills\n  }\n}];"
+      },
+      "id": "parse-skills-016",
+      "name": "Parse Extracted Skills",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [3320, 400]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o-mini",
+        "prompt": "=Standardize this job title to one of these categories:\\n- Software Engineer\\n- Senior Software Engineer\\n- Staff Engineer\\n- Engineering Manager\\n- Product Manager\\n- Data Scientist\\n- Data Engineer\\n- DevOps Engineer\\n- QA Engineer\\n- Designer\\n- Other\\n\\nInput: {{$json.job_title}}\\n\\nOutput only the standardized title, nothing else.",
+        "options": {
+          "temperature": 0.2,
+          "maxTokens": 50
+        }
+      },
+      "id": "standardize-title-017",
+      "name": "Standardize Job Titles",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1.3,
+      "position": [3540, 400],
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-credential",
+          "name": "OpenAI Account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "functionCode": "// Calculate Candidate Score\nconst candidate = $input.first().json;\n\nlet score = 0;\n\n// COMPLETENESS (40 points)\nif (candidate.email && candidate.email_status === 'valid') {\n  score += 10;\n} else if (candidate.email) {\n  score += 5;\n}\n\nif (candidate.phone && candidate.phone.length > 5) {\n  score += 5;\n}\n\nif (candidate.linkedin_url) {\n  score += 10;\n}\n\nif (candidate.resume_text && candidate.resume_text.length > 100) {\n  score += 10;\n}\n\nif (candidate.skills) {\n  const skillCount = candidate.skills.split(',').filter(s => s.trim()).length;\n  if (skillCount > 3) score += 5;\n}\n\n// EXPERIENCE (30 points)\nconst years = parseInt(candidate.years_experience) || 0;\nif (years >= 5) {\n  score += 30;\n} else if (years >= 3) {\n  score += 20;\n} else if (years >= 1) {\n  score += 10;\n} else {\n  score += 5; // Some credit for any experience data\n}\n\n// ENGAGEMENT (30 points)\nif (candidate.company && candidate.company.length > 0) {\n  score += 15;\n}\n\nif (candidate.location && candidate.location.length > 0) {\n  score += 10;\n}\n\nif (candidate.source === 'referral') {\n  score += 5;\n}\n\n// Ensure score is between 0-100\nscore = Math.min(100, Math.max(0, score));\n\n// Assign tier\nlet tier = 'C';\nif (score >= 80) {\n  tier = 'A';\n} else if (score >= 60) {\n  tier = 'B';\n}\n\nreturn [{\n  json: {\n    ...candidate,\n    candidate_score: score,\n    candidate_tier: tier,\n    score_calculated_at: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "calculate-score-018",
+      "name": "Calculate Candidate Score",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [3760, 400]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Assign to Recruiter based on tier and role\nconst candidate = $input.first().json;\n\nconst tier = candidate.candidate_tier || 'C';\nconst jobTitle = (candidate.standardized_title || candidate.job_title || '').toLowerCase();\n\n// Engineering-related titles\nconst engineeringRoles = ['engineer', 'developer', 'devops', 'qa', 'architect'];\nconst isEngineering = engineeringRoles.some(role => jobTitle.includes(role));\n\n// Recruiter assignment logic\nlet assignedRecruiter = '';\nlet assignmentReason = '';\n\nif (tier === 'A' && isEngineering) {\n  assignedRecruiter = 'senior-tech-recruiter@company.com';\n  assignmentReason = 'tier_a_engineering';\n} else if (tier === 'A' && !isEngineering) {\n  assignedRecruiter = 'senior-general-recruiter@company.com';\n  assignmentReason = 'tier_a_non_engineering';\n} else if (tier === 'B') {\n  // Round-robin assignment (simplified - use modulo of timestamp)\n  const recruiters = [\n    'mid-recruiter-1@company.com',\n    'mid-recruiter-2@company.com',\n    'mid-recruiter-3@company.com'\n  ];\n  const index = Date.now() % recruiters.length;\n  assignedRecruiter = recruiters[index];\n  assignmentReason = 'tier_b_round_robin';\n} else {\n  assignedRecruiter = 'junior-recruiter-pool@company.com';\n  assignmentReason = 'tier_c_junior_pool';\n}\n\nreturn [{\n  json: {\n    ...candidate,\n    assigned_recruiter: assignedRecruiter,\n    assignment_reason: assignmentReason,\n    assigned_at: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "assign-recruiter-019",
+      "name": "Assign to Recruiter",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [3980, 400]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Tag for Campaigns - Segmentation Logic\nconst candidate = $input.first().json;\n\nconst tags = [];\n\n// Tier-based tags\nif (candidate.candidate_tier === 'A') {\n  tags.push('high_priority');\n} else if (candidate.candidate_tier === 'B') {\n  tags.push('medium_priority');\n}\n\n// Experience-based tags\nconst years = parseInt(candidate.years_experience) || 0;\nif (years >= 5) {\n  tags.push('experienced');\n} else if (years >= 2) {\n  tags.push('mid_level');\n} else if (years >= 0) {\n  tags.push('junior');\n}\n\n// Skill-based tags\nconst skills = (candidate.skills || '').toLowerCase();\nif (skills.includes('python')) tags.push('python_developer');\nif (skills.includes('javascript') || skills.includes('react')) tags.push('frontend_developer');\nif (skills.includes('aws') || skills.includes('azure')) tags.push('cloud_engineer');\nif (skills.includes('sql') || skills.includes('database')) tags.push('data_specialist');\n\n// Location-based tags\nconst location = (candidate.location || '').toLowerCase();\nif (location.includes('remote')) tags.push('remote_candidate');\nif (location.includes('san francisco') || location.includes('sf')) tags.push('bay_area');\nif (location.includes('new york') || location.includes('nyc')) tags.push('new_york');\n\n// Email validation tag\nif (candidate.email_status === 'valid') {\n  tags.push('verified_email');\n}\n\n// LinkedIn presence tag\nif (candidate.linkedin_url) {\n  tags.push('linkedin_profile');\n}\n\nreturn [{\n  json: {\n    ...candidate,\n    campaign_tags: tags,\n    tags_count: tags.length,\n    tagged_at: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "tag-campaigns-020",
+      "name": "Tag for Campaigns",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [4200, 400]
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": "={{$env.GOOGLE_SHEETS_MASTER_DB_ID}}",
+        "sheetName": "Master_Candidates",
+        "dataMode": "autoMapInputData",
+        "columnToMatchOn": "email",
+        "options": {}
+      },
+      "id": "update-master-db-021",
+      "name": "Update Master Database",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [4420, 400],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "google-sheets-credential",
+          "name": "Google Sheets Account"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.ATS_API_ENDPOINT}}/candidates",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.ATS_API_KEY}}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "send-to-ats-022",
+      "name": "Send to ATS",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [4640, 400],
+      "continueOnFail": true,
+      "executeOnce": false
+    },
+    {
+      "parameters": {
+        "functionCode": "// Aggregate all results for logging\nconst allItems = $input.all();\n\nlet totalUploaded = 0;\nlet duplicatesFound = 0;\nlet newCandidates = 0;\nlet tierACandidates = 0;\nlet tierBCandidates = 0;\nlet tierCCandidates = 0;\nlet emailsValidated = 0;\nlet linkedinFound = 0;\nlet skillsExtracted = 0;\n\nfor (const item of allItems) {\n  totalUploaded++;\n  \n  if (item.json.action === 'updated') {\n    duplicatesFound++;\n  } else {\n    newCandidates++;\n  }\n  \n  if (item.json.candidate_tier === 'A') tierACandidates++;\n  if (item.json.candidate_tier === 'B') tierBCandidates++;\n  if (item.json.candidate_tier === 'C') tierCCandidates++;\n  \n  if (item.json.email_status === 'valid') emailsValidated++;\n  if (item.json.linkedin_url) linkedinFound++;\n  if (item.json.extracted_skills) skillsExtracted++;\n}\n\nconst batchId = allItems[0]?.json?.batch_id || `batch_${Date.now()}`;\nconst uploadedBy = allItems[0]?.json?.uploaded_by || 'system';\n\nreturn [{\n  json: {\n    timestamp: new Date().toISOString(),\n    workflow: 'candidate-deduplication-enrichment',\n    status: 'success',\n    total_uploaded: totalUploaded,\n    duplicates_found: duplicatesFound,\n    new_candidates: newCandidates,\n    tier_a_count: tierACandidates,\n    tier_b_count: tierBCandidates,\n    tier_c_count: tierCCandidates,\n    emails_validated: emailsValidated,\n    linkedin_found: linkedinFound,\n    skills_extracted: skillsExtracted,\n    uploaded_by: uploadedBy,\n    batch_id: batchId,\n    execution_time_ms: 0 // Will be calculated by n8n\n  }\n}];"
+      },
+      "id": "prepare-log-023",
+      "name": "Prepare Activity Log",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [4860, 400]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": "={{$env.GOOGLE_SHEETS_ACTIVITY_LOG_ID}}",
+        "sheetName": "Activity_Log",
+        "dataMode": "autoMapInputData",
+        "options": {}
+      },
+      "id": "log-activity-024",
+      "name": "Log Activity",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [5080, 400],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "google-sheets-credential",
+          "name": "Google Sheets Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "id": "respond-webhook-025",
+      "name": "Respond with Summary",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [5300, 400]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Format final response\nconst logData = $input.first().json;\n\nconst response = {\n  success: true,\n  message: `${logData.total_uploaded} uploaded, ${logData.duplicates_found} duplicates, ${logData.new_candidates} new`,\n  details: {\n    total_uploaded: logData.total_uploaded,\n    duplicates_merged: logData.duplicates_found,\n    new_candidates: logData.new_candidates,\n    tier_breakdown: {\n      A: logData.tier_a_count,\n      B: logData.tier_b_count,\n      C: logData.tier_c_count\n    },\n    enrichment_summary: {\n      emails_validated: logData.emails_validated,\n      linkedin_found: logData.linkedin_found,\n      skills_extracted: logData.skills_extracted\n    },\n    batch_id: logData.batch_id,\n    next_steps: 'Review Tier A candidates in ATS dashboard'\n  },\n  timestamp: logData.timestamp\n};\n\nreturn [{ json: response }];"
+      },
+      "id": "format-response-026",
+      "name": "Format Response",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [5300, 300]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Input Validation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Input Validation": {
+      "main": [
+        [
+          {
+            "node": "Normalize Fields",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Fields": {
+      "main": [
+        [
+          {
+            "node": "Load Existing Database",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Existing Database": {
+      "main": [
+        [
+          {
+            "node": "Fuzzy Matching Algorithm",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fuzzy Matching Algorithm": {
+      "main": [
+        [
+          {
+            "node": "Split Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Results": {
+      "main": [
+        [
+          {
+            "node": "Route: Duplicate?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route: Duplicate?": {
+      "main": [
+        [
+          {
+            "node": "Merge Records",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Check Email Validity",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Records": {
+      "main": [
+        [
+          {
+            "node": "Calculate Candidate Score",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Email Validity": {
+      "main": [
+        [
+          {
+            "node": "Parse Email Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Email Result": {
+      "main": [
+        [
+          {
+            "node": "Enrich Company Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enrich Company Data": {
+      "main": [
+        [
+          {
+            "node": "Parse Company Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Company Data": {
+      "main": [
+        [
+          {
+            "node": "Find LinkedIn Profile",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find LinkedIn Profile": {
+      "main": [
+        [
+          {
+            "node": "Parse LinkedIn Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse LinkedIn Data": {
+      "main": [
+        [
+          {
+            "node": "Extract Skills from Resume",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Skills from Resume": {
+      "main": [
+        [
+          {
+            "node": "Parse Extracted Skills",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Extracted Skills": {
+      "main": [
+        [
+          {
+            "node": "Standardize Job Titles",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Standardize Job Titles": {
+      "main": [
+        [
+          {
+            "node": "Calculate Candidate Score",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Candidate Score": {
+      "main": [
+        [
+          {
+            "node": "Assign to Recruiter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Assign to Recruiter": {
+      "main": [
+        [
+          {
+            "node": "Tag for Campaigns",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tag for Campaigns": {
+      "main": [
+        [
+          {
+            "node": "Update Master Database",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Master Database": {
+      "main": [
+        [
+          {
+            "node": "Send to ATS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send to ATS": {
+      "main": [
+        [
+          {
+            "node": "Prepare Activity Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Activity Log": {
+      "main": [
+        [
+          {
+            "node": "Log Activity",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Format Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Activity": {
+      "main": [
+        [
+          {
+            "node": "Respond with Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Response": {
+      "main": [
+        [
+          {
+            "node": "Respond with Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 1,
+  "updatedAt": "2025-11-18T10:00:00.000Z",
+  "versionId": "workflow-v1"
+}
