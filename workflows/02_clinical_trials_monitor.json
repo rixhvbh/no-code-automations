@@ -1,0 +1,173 @@
+{
+  "name": "ClinicalTrials.gov Monitor - Every 6 Hours",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 */6 * * *"
+            }
+          ]
+        }
+      },
+      "id": "trigger-schedule",
+      "name": "Every 6 Hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id, name FROM companies WHERE id IN (SELECT DISTINCT company_id FROM clinical_trials UNION SELECT id FROM companies LIMIT 100)",
+        "options": {}
+      },
+      "id": "node-get-companies",
+      "name": "Get Companies to Monitor",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [450, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credentials",
+          "name": "MedTech PostgreSQL DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Prepare ClinicalTrials.gov API request\nconst companies = $input.all();\nconst requests = [];\n\nfor (const company of companies) {\n  const companyName = company.json.name;\n  const companyId = company.json.id;\n  \n  // Build API URL for ClinicalTrials.gov\n  const apiUrl = 'https://clinicaltrials.gov/api/v2/studies';\n  const params = new URLSearchParams({\n    'query.term': companyName,\n    'filter.overallStatus': 'RECRUITING,ACTIVE_NOT_RECRUITING,COMPLETED,SUSPENDED,TERMINATED',\n    'pageSize': '50',\n    'format': 'json'\n  });\n  \n  requests.push({\n    company_id: companyId,\n    company_name: companyName,\n    url: `${apiUrl}?${params.toString()}`,\n    method: 'GET'\n  });\n}\n\nreturn requests.map(r => ({ json: r }));"
+      },
+      "id": "node-prepare-requests",
+      "name": "Prepare API Requests",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{$json.url}}",
+        "authentication": "none",
+        "requestMethod": "GET",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "node-fetch-trials",
+      "name": "Fetch Trial Data",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Parse ClinicalTrials.gov API response\nconst response = $input.first().json;\nconst companyId = $node['Prepare API Requests'].json.company_id;\n\nconst trials = [];\n\ntry {\n  const studies = response.studies || [];\n  \n  for (const study of studies) {\n    const protocolSection = study.protocolSection || {};\n    const identificationModule = protocolSection.identificationModule || {};\n    const statusModule = protocolSection.statusModule || {};\n    const designModule = protocolSection.designModule || {};\n    const sponsorCollaboratorsModule = protocolSection.sponsorCollaboratorsModule || {};\n    const conditionsModule = protocolSection.conditionsModule || {};\n    const armsInterventionsModule = protocolSection.armsInterventionsModule || {};\n    const outcomesModule = protocolSection.outcomesModule || {};\n    \n    trials.push({\n      company_id: companyId,\n      nct_id: identificationModule.nctId,\n      title: identificationModule.briefTitle,\n      status: statusModule.overallStatus,\n      phase: designModule.phases ? designModule.phases.join(', ') : null,\n      study_type: designModule.studyType,\n      start_date: statusModule.startDateStruct?.date || null,\n      completion_date: statusModule.completionDateStruct?.date || null,\n      primary_completion_date: statusModule.primaryCompletionDateStruct?.date || null,\n      enrollment: statusModule.enrollmentInfo?.count || null,\n      enrollment_actual: statusModule.enrollmentInfo?.type === 'ACTUAL' ? statusModule.enrollmentInfo.count : null,\n      primary_outcome: outcomesModule.primaryOutcomes ? JSON.stringify(outcomesModule.primaryOutcomes) : null,\n      secondary_outcome: outcomesModule.secondaryOutcomes ? JSON.stringify(outcomesModule.secondaryOutcomes) : null,\n      conditions: conditionsModule.conditions || [],\n      interventions: armsInterventionsModule.interventions ? armsInterventionsModule.interventions.map(i => i.name) : [],\n      sponsors: [sponsorCollaboratorsModule.leadSponsor?.name] || [],\n      collaborators: sponsorCollaboratorsModule.collaborators ? sponsorCollaboratorsModule.collaborators.map(c => c.name) : [],\n      last_updated: statusModule.lastUpdatePostDateStruct?.date || new Date().toISOString(),\n      raw_data: JSON.stringify(study)\n    });\n  }\n  \n  console.log(`Parsed ${trials.length} clinical trials`);\n  \n} catch (error) {\n  console.error('Error parsing trials:', error.message);\n}\n\nreturn trials.map(t => ({ json: t }));"
+      },
+      "id": "node-parse-trials",
+      "name": "Parse Trial Data",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1050, 300]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "clinical_trials",
+        "columns": "company_id, nct_id, title, status, phase, study_type, start_date, completion_date, primary_completion_date, enrollment, enrollment_actual, primary_outcome, secondary_outcome, conditions, interventions, sponsors, collaborators, last_updated, raw_data",
+        "options": {
+          "skipOnConflict": true
+        }
+      },
+      "id": "node-upsert-trials",
+      "name": "Upsert Trial Records",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1250, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credentials",
+          "name": "MedTech PostgreSQL DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Detect significant trial changes\nconst trials = $input.all();\nconst alerts = [];\n\nfor (const trial of trials) {\n  const data = trial.json;\n  \n  // Check for critical status changes\n  const isCritical = \n    data.status === 'TERMINATED' ||\n    data.status === 'SUSPENDED' ||\n    data.status === 'COMPLETED';\n  \n  // Check for large enrollment trials\n  const isLargeEnrollment = data.enrollment && data.enrollment > 500;\n  \n  // Check for Phase 3 or Phase 4 trials\n  const isLatePhaseTrial = data.phase && (data.phase.includes('3') || data.phase.includes('4'));\n  \n  if (isCritical || (isLargeEnrollment && isLatePhaseTrial)) {\n    alerts.push({\n      company_id: data.company_id,\n      alert_type: 'clinical_trial_update',\n      priority: isCritical ? 'high' : 'medium',\n      title: `Trial ${data.status}: ${data.title}`,\n      description: `NCT ID: ${data.nct_id} | Status: ${data.status} | Phase: ${data.phase || 'N/A'} | Enrollment: ${data.enrollment || 'N/A'}`,\n      data: JSON.stringify(data),\n      action_url: `https://clinicaltrials.gov/study/${data.nct_id}`,\n      created_at: new Date().toISOString()\n    });\n  }\n}\n\nif (alerts.length > 0) {\n  return alerts.map(a => ({ json: a }));\n} else {\n  return [];\n}"
+      },
+      "id": "node-detect-changes",
+      "name": "Detect Significant Changes",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1450, 300]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "alerts",
+        "columns": "company_id, alert_type, priority, title, description, data, action_url, created_at",
+        "options": {}
+      },
+      "id": "node-save-alerts",
+      "name": "Save Alerts",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1650, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credentials",
+          "name": "MedTech PostgreSQL DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE scraper_state SET last_run_at = NOW(), last_success_at = NOW() WHERE scraper_name = 'clinicaltrials_monitor'",
+        "options": {}
+      },
+      "id": "node-update-state",
+      "name": "Update State",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1850, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credentials",
+          "name": "MedTech PostgreSQL DB"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every 6 Hours": {
+      "main": [[{ "node": "Get Companies to Monitor", "type": "main", "index": 0 }]]
+    },
+    "Get Companies to Monitor": {
+      "main": [[{ "node": "Prepare API Requests", "type": "main", "index": 0 }]]
+    },
+    "Prepare API Requests": {
+      "main": [[{ "node": "Fetch Trial Data", "type": "main", "index": 0 }]]
+    },
+    "Fetch Trial Data": {
+      "main": [[{ "node": "Parse Trial Data", "type": "main", "index": 0 }]]
+    },
+    "Parse Trial Data": {
+      "main": [[{ "node": "Upsert Trial Records", "type": "main", "index": 0 }]]
+    },
+    "Upsert Trial Records": {
+      "main": [[{ "node": "Detect Significant Changes", "type": "main", "index": 0 }]]
+    },
+    "Detect Significant Changes": {
+      "main": [[{ "node": "Save Alerts", "type": "main", "index": 0 }]]
+    },
+    "Save Alerts": {
+      "main": [[{ "node": "Update State", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [{ "name": "Clinical Trials", "id": "trials" }]
+}

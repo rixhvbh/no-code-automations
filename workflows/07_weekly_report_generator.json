@@ -1,0 +1,208 @@
+{
+  "name": "Weekly Report Generator - Monday 9AM",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "cronExpression", "expression": "0 9 * * 1" }]
+        }
+      },
+      "id": "trigger-weekly",
+      "name": "Monday 9AM Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Calculate date range for last 7 days\nconst endDate = new Date();\nconst startDate = new Date();\nstartDate.setDate(startDate.getDate() - 7);\n\nreturn [{\n  json: {\n    period_start: startDate.toISOString().split('T')[0],\n    period_end: endDate.toISOString().split('T')[0],\n    report_type: 'weekly_summary'\n  }\n}];"
+      },
+      "id": "node-set-dates",
+      "name": "Set Report Period",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=SELECT \n  (SELECT COUNT(*) FROM fda_approvals WHERE approval_date >= '{{$json.period_start}}') as fda_approvals,\n  (SELECT COUNT(*) FROM clinical_trials WHERE start_date >= '{{$json.period_start}}') as new_trials,\n  (SELECT COUNT(*) FROM funding_rounds WHERE announcement_date >= '{{$json.period_start}}') as funding_rounds,\n  (SELECT COALESCE(SUM(amount_usd), 0) FROM funding_rounds WHERE announcement_date >= '{{$json.period_start}}') as total_funding,\n  (SELECT COUNT(*) FROM publications WHERE publication_date >= '{{$json.period_start}}') as publications,\n  (SELECT COUNT(*) FROM press_releases WHERE published_date >= '{{$json.period_start}}') as press_releases"
+      },
+      "id": "node-get-stats",
+      "name": "Get Weekly Statistics",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [650, 300],
+      "credentials": { "postgres": { "id": "postgres-credentials", "name": "MedTech PostgreSQL DB" } }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=SELECT c.name, f.device_name, f.approval_date, f.fda_number \nFROM fda_approvals f \nJOIN companies c ON f.company_id = c.id \nWHERE f.approval_date >= '{{$node['Set Report Period'].json.period_start}}' \nORDER BY f.approval_date DESC LIMIT 20"
+      },
+      "id": "node-get-approvals",
+      "name": "Get Recent FDA Approvals",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [650, 400],
+      "credentials": { "postgres": { "id": "postgres-credentials", "name": "MedTech PostgreSQL DB" } }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=SELECT c.name, fr.round_type, fr.amount_usd, fr.announcement_date \nFROM funding_rounds fr \nJOIN companies c ON fr.company_id = c.id \nWHERE fr.announcement_date >= '{{$node['Set Report Period'].json.period_start}}' \nORDER BY fr.amount_usd DESC LIMIT 10"
+      },
+      "id": "node-get-funding",
+      "name": "Get Top Funding Rounds",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [650, 500],
+      "credentials": { "postgres": { "id": "postgres-credentials", "name": "MedTech PostgreSQL DB" } }
+    },
+    {
+      "parameters": {
+        "resource": "text",
+        "operation": "message",
+        "modelId": "gpt-4",
+        "messages": {
+          "values": [{
+            "role": "user",
+            "content": "=Generate an executive summary for this weekly medical device intelligence report. Include key insights, trends, and notable events.\n\nStatistics:\n- FDA Approvals: {{$node['Get Weekly Statistics'].json.fda_approvals}}\n- New Clinical Trials: {{$node['Get Weekly Statistics'].json.new_trials}}\n- Funding Rounds: {{$node['Get Weekly Statistics'].json.funding_rounds}}\n- Total Funding: ${{$node['Get Weekly Statistics'].json.total_funding / 1000000}}M\n- Publications: {{$node['Get Weekly Statistics'].json.publications}}\n- Press Releases: {{$node['Get Weekly Statistics'].json.press_releases}}\n\nTop FDA Approvals: {{JSON.stringify($node['Get Recent FDA Approvals'].json)}}\n\nTop Funding: {{JSON.stringify($node['Get Top Funding Rounds'].json)}}"
+          }]
+        },
+        "options": {}
+      },
+      "id": "node-generate-summary",
+      "name": "Generate AI Summary",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1.4,
+      "position": [850, 300],
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-credentials",
+          "name": "OpenAI API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Build comprehensive report HTML\nconst stats = $node['Get Weekly Statistics'].json;\nconst approvals = $node['Get Recent FDA Approvals'].json;\nconst funding = $node['Get Top Funding Rounds'].json;\nconst aiSummary = $input.first().json.message?.content || 'Report summary...';\nconst reportPeriod = $node['Set Report Period'].json;\n\nconst html = `\n<!DOCTYPE html>\n<html>\n<head>\n  <style>\n    body { font-family: Arial, sans-serif; margin: 40px; color: #333; }\n    h1 { color: #2c3e50; border-bottom: 3px solid #3498db; padding-bottom: 10px; }\n    h2 { color: #34495e; margin-top: 30px; }\n    .stat-box { display: inline-block; margin: 10px; padding: 20px; background: #ecf0f1; border-radius: 8px; }\n    .stat-box h3 { margin: 0; color: #3498db; font-size: 32px; }\n    .stat-box p { margin: 5px 0 0 0; color: #7f8c8d; }\n    table { width: 100%; border-collapse: collapse; margin-top: 15px; }\n    th { background: #3498db; color: white; padding: 12px; text-align: left; }\n    td { padding: 10px; border-bottom: 1px solid #ddd; }\n    tr:hover { background: #f8f9fa; }\n    .summary { background: #e8f4f8; padding: 20px; border-left: 4px solid #3498db; margin: 20px 0; }\n  </style>\n</head>\n<body>\n  <h1>Medical Device Competitive Intelligence Report</h1>\n  <p><strong>Report Period:</strong> ${reportPeriod.period_start} to ${reportPeriod.period_end}</p>\n  \n  <div class=\"summary\">\n    <h2>Executive Summary</h2>\n    <p>${aiSummary}</p>\n  </div>\n  \n  <h2>Weekly Metrics</h2>\n  <div class=\"stat-box\"><h3>${stats.fda_approvals}</h3><p>FDA Approvals</p></div>\n  <div class=\"stat-box\"><h3>${stats.new_trials}</h3><p>New Trials</p></div>\n  <div class=\"stat-box\"><h3>${stats.funding_rounds}</h3><p>Funding Rounds</p></div>\n  <div class=\"stat-box\"><h3>$${(stats.total_funding / 1000000).toFixed(1)}M</h3><p>Total Funding</p></div>\n  <div class=\"stat-box\"><h3>${stats.publications}</h3><p>Publications</p></div>\n  <div class=\"stat-box\"><h3>${stats.press_releases}</h3><p>Press Releases</p></div>\n  \n  <h2>Recent FDA Approvals</h2>\n  <table>\n    <tr><th>Company</th><th>Device</th><th>Date</th><th>FDA Number</th></tr>\n    ${approvals.map(a => `<tr><td>${a.name}</td><td>${a.device_name}</td><td>${a.approval_date}</td><td>${a.fda_number}</td></tr>`).join('')}\n  </table>\n  \n  <h2>Top Funding Rounds</h2>\n  <table>\n    <tr><th>Company</th><th>Round</th><th>Amount</th><th>Date</th></tr>\n    ${funding.map(f => `<tr><td>${f.name}</td><td>${f.round_type}</td><td>$${(f.amount_usd / 1000000).toFixed(1)}M</td><td>${f.announcement_date}</td></tr>`).join('')}\n  </table>\n</body>\n</html>\n`;\n\nreturn [{ json: { html: html, report_period: reportPeriod } }];"
+      },
+      "id": "node-build-html",
+      "name": "Build Report HTML",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1050, 300]
+    },
+    {
+      "parameters": {
+        "url": "https://api.pdfshift.io/v3/convert/pdf",
+        "requestMethod": "POST",
+        "jsonParameters": true,
+        "bodyParametersJson": "={\"source\": \"{{$json.html}}\", \"sandbox\": false}",
+        "options": {
+          "headers": {
+            "headers": [
+              { "name": "Authorization", "value": "Basic {{$env.PDFSHIFT_API_KEY}}" },
+              { "name": "Content-Type", "value": "application/json" }
+            ]
+          },
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        }
+      },
+      "id": "node-convert-pdf",
+      "name": "Convert to PDF",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1250, 300]
+    },
+    {
+      "parameters": {
+        "operation": "upload",
+        "fileContent": "={{$binary.data}}",
+        "name": "=MedTech_Intelligence_Report_{{$node['Set Report Period'].json.period_start}}.pdf",
+        "driveId": {
+          "__rl": true,
+          "value": "My Drive",
+          "mode": "list"
+        },
+        "folderId": "={{$env.GOOGLE_DRIVE_FOLDER_ID}}"
+      },
+      "id": "node-upload-drive",
+      "name": "Upload to Google Drive",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [1450, 300],
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "gdrive-credentials",
+          "name": "Google Drive"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "generated_reports",
+        "columns": "report_type, report_period_start, report_period_end, file_url, generated_at",
+        "additionalFields": {
+          "file_url": "={{$json.webViewLink}}",
+          "report_type": "weekly_summary",
+          "report_period_start": "={{$node['Set Report Period'].json.period_start}}",
+          "report_period_end": "={{$node['Set Report Period'].json.period_end}}"
+        }
+      },
+      "id": "node-log-report",
+      "name": "Log Report Generation",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1650, 300],
+      "credentials": { "postgres": { "id": "postgres-credentials", "name": "MedTech PostgreSQL DB" } }
+    },
+    {
+      "parameters": {
+        "fromEmail": "reports@medtechinsights.com",
+        "toEmail": "={{$env.CLIENT_EMAIL}}",
+        "subject": "=Weekly MedTech Intelligence Report - {{$node['Set Report Period'].json.period_start}}",
+        "emailType": "html",
+        "message": "=Please find attached this week's Medical Device Competitive Intelligence Report.<br><br>View online: {{$node['Upload to Google Drive'].json.webViewLink}}",
+        "attachments": "data:application/pdf;base64,={{$binary.data.toString('base64')}}",
+        "options": {}
+      },
+      "id": "node-send-email",
+      "name": "Email Report",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.2,
+      "position": [1650, 400],
+      "credentials": {
+        "smtp": {
+          "id": "smtp-credentials",
+          "name": "SMTP"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Monday 9AM Trigger": { "main": [[{ "node": "Set Report Period", "type": "main", "index": 0 }]] },
+    "Set Report Period": { "main": [[
+      { "node": "Get Weekly Statistics", "type": "main", "index": 0 },
+      { "node": "Get Recent FDA Approvals", "type": "main", "index": 0 },
+      { "node": "Get Top Funding Rounds", "type": "main", "index": 0 }
+    ]] },
+    "Get Weekly Statistics": { "main": [[{ "node": "Generate AI Summary", "type": "main", "index": 0 }]] },
+    "Get Recent FDA Approvals": { "main": [[{ "node": "Generate AI Summary", "type": "main", "index": 0 }]] },
+    "Get Top Funding Rounds": { "main": [[{ "node": "Generate AI Summary", "type": "main", "index": 0 }]] },
+    "Generate AI Summary": { "main": [[{ "node": "Build Report HTML", "type": "main", "index": 0 }]] },
+    "Build Report HTML": { "main": [[{ "node": "Convert to PDF", "type": "main", "index": 0 }]] },
+    "Convert to PDF": { "main": [[{ "node": "Upload to Google Drive", "type": "main", "index": 0 }]] },
+    "Upload to Google Drive": { "main": [[
+      { "node": "Log Report Generation", "type": "main", "index": 0 },
+      { "node": "Email Report", "type": "main", "index": 0 }
+    ]] }
+  },
+  "tags": [{ "name": "Reports", "id": "reports" }]
+}

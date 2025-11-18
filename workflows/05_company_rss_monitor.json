@@ -1,0 +1,99 @@
+{
+  "name": "Company RSS & Press Release Monitor - Every 12 Hours",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "cronExpression", "expression": "0 */12 * * *" }]
+        }
+      },
+      "id": "trigger-schedule",
+      "name": "Every 12 Hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id, name, website FROM companies WHERE website IS NOT NULL LIMIT 50"
+      },
+      "id": "node-get-companies",
+      "name": "Get Companies with Websites",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [450, 300],
+      "credentials": { "postgres": { "id": "postgres-credentials", "name": "MedTech PostgreSQL DB" } }
+    },
+    {
+      "parameters": {
+        "functionCode": "const companies = $input.all();\nconst rssUrls = [];\n\nfor (const company of companies) {\n  const website = company.json.website;\n  const companyId = company.json.id;\n  const companyName = company.json.name;\n  \n  // Common RSS feed patterns\n  const feedPatterns = [\n    `${website}/feed`,\n    `${website}/rss`,\n    `${website}/news/feed`,\n    `${website}/press-releases/feed`,\n    `${website}/blog/feed`\n  ];\n  \n  for (const feedUrl of feedPatterns) {\n    rssUrls.push({\n      company_id: companyId,\n      company_name: companyName,\n      feed_url: feedUrl\n    });\n  }\n}\n\nreturn rssUrls.map(u => ({ json: u }));"
+      },
+      "id": "node-generate-feeds",
+      "name": "Generate RSS Feed URLs",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{$json.feed_url}}",
+        "requestMethod": "GET",
+        "options": {
+          "timeout": 10000,
+          "response": { "response": { "neverError": true } }
+        }
+      },
+      "id": "node-fetch-feed",
+      "name": "Fetch RSS Feed",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "const response = $input.first().json;\nconst companyId = $node['Generate RSS Feed URLs'].json.company_id;\nconst pressReleases = [];\n\ntry {\n  const body = response.body || response;\n  \n  // Check if it's a valid RSS/XML feed\n  if (typeof body === 'string' && (body.includes('<rss') || body.includes('<feed'))) {\n    // Parse RSS feed (simplified - use rss-parser in production)\n    const itemRegex = /<item[^>]*>(.*?)<\\/item>/gs;\n    const items = [...body.matchAll(itemRegex)];\n    \n    for (const item of items.slice(0, 10)) {\n      const itemContent = item[1];\n      \n      const titleMatch = itemContent.match(/<title>(.*?)<\\/title>/s);\n      const linkMatch = itemContent.match(/<link>(.*?)<\\/link>/s);\n      const descMatch = itemContent.match(/<description>(.*?)<\\/description>/s);\n      const pubDateMatch = itemContent.match(/<pubDate>(.*?)<\\/pubDate>/s);\n      \n      if (titleMatch && linkMatch) {\n        pressReleases.push({\n          company_id: companyId,\n          title: titleMatch[1].replace(/<![CDATA[/g, '').replace(/]]>/g, '').trim(),\n          url: linkMatch[1].trim(),\n          content: descMatch ? descMatch[1].replace(/<![CDATA[/g, '').replace(/]]>/g, '').trim() : '',\n          published_date: pubDateMatch ? new Date(pubDateMatch[1]).toISOString() : new Date().toISOString(),\n          source: 'RSS',\n          category: 'Press Release',\n          raw_data: JSON.stringify({ item: itemContent.substring(0, 500) })\n        });\n      }\n    }\n  }\n} catch (error) {\n  // Silent fail for invalid/missing feeds\n  console.log('Feed parse error (expected for some URLs):', error.message);\n}\n\nreturn pressReleases.map(p => ({ json: p }));"
+      },
+      "id": "node-parse-feed",
+      "name": "Parse RSS Feed",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1050, 300]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "press_releases",
+        "columns": "company_id, title, url, content, published_date, source, category, raw_data",
+        "options": { "skipOnConflict": true }
+      },
+      "id": "node-insert-releases",
+      "name": "Insert Press Releases",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1250, 300],
+      "credentials": { "postgres": { "id": "postgres-credentials", "name": "MedTech PostgreSQL DB" } }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE scraper_state SET last_run_at = NOW(), last_success_at = NOW() WHERE scraper_name = 'company_rss_monitor'"
+      },
+      "id": "node-update-state",
+      "name": "Update State",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1450, 300],
+      "credentials": { "postgres": { "id": "postgres-credentials", "name": "MedTech PostgreSQL DB" } }
+    }
+  ],
+  "connections": {
+    "Every 12 Hours": { "main": [[{ "node": "Get Companies with Websites", "type": "main", "index": 0 }]] },
+    "Get Companies with Websites": { "main": [[{ "node": "Generate RSS Feed URLs", "type": "main", "index": 0 }]] },
+    "Generate RSS Feed URLs": { "main": [[{ "node": "Fetch RSS Feed", "type": "main", "index": 0 }]] },
+    "Fetch RSS Feed": { "main": [[{ "node": "Parse RSS Feed", "type": "main", "index": 0 }]] },
+    "Parse RSS Feed": { "main": [[{ "node": "Insert Press Releases", "type": "main", "index": 0 }]] },
+    "Insert Press Releases": { "main": [[{ "node": "Update State", "type": "main", "index": 0 }]] }
+  },
+  "tags": [{ "name": "Press Releases", "id": "pr" }]
+}

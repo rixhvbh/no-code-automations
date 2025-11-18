@@ -1,0 +1,163 @@
+{
+  "name": "Company Enrichment Pipeline - Webhook Triggered",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "enrich-company",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "trigger-webhook",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "const inputData = $input.first().json;\nconst requestData = inputData.body || inputData;\n\nif (!requestData.company_id) {\n  throw new Error('company_id is required');\n}\n\nreturn [{\n  json: {\n    company_id: requestData.company_id,\n    company_name: requestData.company_name || '',\n    company_website: requestData.company_website || ''\n  }\n}];"
+      },
+      "id": "node-validate-input",
+      "name": "Validate Input",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "url": "https://api.apollo.io/v1/organizations/enrich",
+        "requestMethod": "POST",
+        "jsonParameters": true,
+        "bodyParametersJson": "={\"domain\": \"{{$json.company_website}}\"}",
+        "options": {
+          "headers": {
+            "headers": [{ "name": "X-Api-Key", "value": "={{$env.APOLLO_API_KEY}}" }]
+          }
+        }
+      },
+      "id": "node-apollo-enrich",
+      "name": "Apollo.io Enrichment",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [650, 200]
+    },
+    {
+      "parameters": {
+        "url": "https://company.clearbit.com/v2/companies/find",
+        "requestMethod": "GET",
+        "qs": {
+          "parameter": [{ "name": "domain", "value": "={{$json.company_website}}" }]
+        },
+        "options": {
+          "headers": {
+            "headers": [{ "name": "Authorization", "value": "Bearer {{$env.CLEARBIT_API_KEY}}" }]
+          }
+        }
+      },
+      "id": "node-clearbit-enrich",
+      "name": "Clearbit Enrichment",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "url": "https://api.hunter.io/v2/domain-search",
+        "requestMethod": "GET",
+        "qs": {
+          "parameter": [
+            { "name": "domain", "value": "={{$json.company_website}}" },
+            { "name": "api_key", "value": "={{$env.HUNTER_API_KEY}}" }
+          ]
+        }
+      },
+      "id": "node-hunter-enrich",
+      "name": "Hunter.io Email Search",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [650, 400]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Merge enrichment data from all sources\nconst apolloData = $node['Apollo.io Enrichment'].json || {};\nconst clearbitData = $node['Clearbit Enrichment'].json || {};\nconst hunterData = $node['Hunter.io Email Search'].json || {};\nconst companyId = $node['Validate Input'].json.company_id;\n\nconst enrichedData = {\n  company_id: companyId,\n  linkedin_url: apolloData.linkedin_url || clearbitData.linkedin?.handle || null,\n  linkedin_followers: clearbitData.linkedin?.followers || null,\n  crunchbase_url: clearbitData.crunchbase?.handle || null,\n  twitter_handle: clearbitData.twitter?.handle || null,\n  twitter_followers: clearbitData.twitter?.followers || null,\n  annual_revenue_usd: clearbitData.metrics?.annualRevenue || apolloData.estimated_annual_revenue || null,\n  employee_growth_rate: clearbitData.metrics?.employeesGrowth || null,\n  tech_stack: clearbitData.tech || [],\n  company_type: clearbitData.type || null,\n  data_sources: JSON.stringify({\n    apollo: !!apolloData.name,\n    clearbit: !!clearbitData.name,\n    hunter: !!hunterData.data\n  }),\n  enrichment_date: new Date().toISOString()\n};\n\n// Extract email patterns from Hunter\nconst emails = [];\nif (hunterData.data && hunterData.data.emails) {\n  for (const email of hunterData.data.emails.slice(0, 10)) {\n    emails.push({\n      company_id: companyId,\n      full_name: `${email.first_name} ${email.last_name}`,\n      title: email.position || null,\n      email: email.value,\n      linkedin_url: email.linkedin || null,\n      source: 'Hunter.io',\n      confidence_score: email.confidence / 100,\n      verified: email.verification?.status === 'valid'\n    });\n  }\n}\n\nreturn [{\n  json: {\n    enrichment: enrichedData,\n    contacts: emails\n  }\n}];"
+      },
+      "id": "node-merge-data",
+      "name": "Merge Enrichment Data",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "company_enrichment",
+        "columns": "company_id, linkedin_url, linkedin_followers, crunchbase_url, twitter_handle, twitter_followers, annual_revenue_usd, employee_growth_rate, tech_stack, company_type, data_sources, enrichment_date",
+        "options": { "skipOnConflict": true }
+      },
+      "id": "node-save-enrichment",
+      "name": "Save Enrichment Data",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1050, 300],
+      "credentials": { "postgres": { "id": "postgres-credentials", "name": "MedTech PostgreSQL DB" } }
+    },
+    {
+      "parameters": {
+        "functionCode": "const contacts = $input.first().json.contacts || [];\nreturn contacts.map(c => ({ json: c }));"
+      },
+      "id": "node-split-contacts",
+      "name": "Split Contacts",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1050, 400]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "executive_contacts",
+        "columns": "company_id, full_name, title, email, linkedin_url, source, confidence_score, verified",
+        "options": { "skipOnConflict": true }
+      },
+      "id": "node-save-contacts",
+      "name": "Save Contacts",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1250, 400],
+      "credentials": { "postgres": { "id": "postgres-credentials", "name": "MedTech PostgreSQL DB" } }
+    },
+    {
+      "parameters": {
+        "options": {
+          "responseCode": 200
+        },
+        "respondWith": "json",
+        "responseBody": "={\"success\": true, \"message\": \"Company enriched successfully\", \"company_id\": \"{{$node['Validate Input'].json.company_id}}\"}"
+      },
+      "id": "node-response",
+      "name": "Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [1450, 300]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": { "main": [[{ "node": "Validate Input", "type": "main", "index": 0 }]] },
+    "Validate Input": { "main": [[
+      { "node": "Apollo.io Enrichment", "type": "main", "index": 0 },
+      { "node": "Clearbit Enrichment", "type": "main", "index": 0 },
+      { "node": "Hunter.io Email Search", "type": "main", "index": 0 }
+    ]] },
+    "Apollo.io Enrichment": { "main": [[{ "node": "Merge Enrichment Data", "type": "main", "index": 0 }]] },
+    "Clearbit Enrichment": { "main": [[{ "node": "Merge Enrichment Data", "type": "main", "index": 0 }]] },
+    "Hunter.io Email Search": { "main": [[{ "node": "Merge Enrichment Data", "type": "main", "index": 0 }]] },
+    "Merge Enrichment Data": { "main": [[
+      { "node": "Save Enrichment Data", "type": "main", "index": 0 },
+      { "node": "Split Contacts", "type": "main", "index": 0 }
+    ]] },
+    "Save Enrichment Data": { "main": [[{ "node": "Response", "type": "main", "index": 0 }]] },
+    "Split Contacts": { "main": [[{ "node": "Save Contacts", "type": "main", "index": 0 }]] },
+    "Save Contacts": { "main": [[{ "node": "Response", "type": "main", "index": 0 }]] }
+  },
+  "tags": [{ "name": "Enrichment", "id": "enrich" }]
+}

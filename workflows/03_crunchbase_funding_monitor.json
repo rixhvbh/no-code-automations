@@ -1,0 +1,110 @@
+{
+  "name": "Crunchbase Funding Monitor - Daily",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "cronExpression", "expression": "0 8 * * *" }]
+        }
+      },
+      "id": "trigger-daily",
+      "name": "Daily 8AM Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id, name, crunchbase_url FROM company_enrichment ce JOIN companies c ON ce.company_id = c.id WHERE ce.crunchbase_url IS NOT NULL LIMIT 100"
+      },
+      "id": "node-get-companies",
+      "name": "Get Companies",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [450, 300],
+      "credentials": { "postgres": { "id": "postgres-credentials", "name": "MedTech PostgreSQL DB" } }
+    },
+    {
+      "parameters": {
+        "functionCode": "const companies = $input.all();\nconst requests = [];\n\nfor (const company of companies) {\n  const url = `https://api.crunchbase.com/api/v4/entities/organizations/${company.json.name.toLowerCase().replace(/\\s+/g, '-')}`;\n  requests.push({\n    company_id: company.json.id,\n    url: url,\n    headers: { 'X-cb-user-key': '{{$env.CRUNCHBASE_API_KEY}}' }\n  });\n}\n\nreturn requests.map(r => ({ json: r }));"
+      },
+      "id": "node-prepare-requests",
+      "name": "Prepare Requests",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{$json.url}}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "requestMethod": "GET",
+        "options": { "timeout": 30000 }
+      },
+      "id": "node-fetch-data",
+      "name": "Fetch Crunchbase Data",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "const response = $input.first().json;\nconst companyId = $node['Prepare Requests'].json.company_id;\nconst fundingRounds = [];\n\ntry {\n  const properties = response.properties || {};\n  const cards = response.cards || {};\n  \n  if (cards.funding_rounds && cards.funding_rounds.length > 0) {\n    for (const round of cards.funding_rounds) {\n      const roundProps = round.properties || {};\n      \n      fundingRounds.push({\n        company_id: companyId,\n        round_type: roundProps.funding_type || 'Unknown',\n        amount_usd: roundProps.money_raised ? roundProps.money_raised.value_usd : null,\n        announcement_date: roundProps.announced_on || null,\n        lead_investors: roundProps.lead_investors ? roundProps.lead_investors.map(i => i.name) : [],\n        participating_investors: roundProps.investors ? roundProps.investors.map(i => i.name) : [],\n        investor_count: roundProps.num_investors || 0,\n        source: 'Crunchbase',\n        raw_data: JSON.stringify(round)\n      });\n    }\n  }\n} catch (error) {\n  console.error('Parse error:', error.message);\n}\n\nreturn fundingRounds.map(f => ({ json: f }));"
+      },
+      "id": "node-parse-funding",
+      "name": "Parse Funding Data",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1050, 300]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "funding_rounds",
+        "columns": "company_id, round_type, amount_usd, announcement_date, lead_investors, participating_investors, investor_count, source, raw_data",
+        "options": { "skipOnConflict": true }
+      },
+      "id": "node-insert-funding",
+      "name": "Insert Funding Rounds",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1250, 300],
+      "credentials": { "postgres": { "id": "postgres-credentials", "name": "MedTech PostgreSQL DB" } }
+    },
+    {
+      "parameters": {
+        "functionCode": "const rounds = $input.all();\nconst alerts = [];\n\nfor (const round of rounds) {\n  const data = round.json;\n  \n  // Alert on rounds > $10M\n  if (data.amount_usd && data.amount_usd > 10000000) {\n    alerts.push({\n      company_id: data.company_id,\n      alert_type: 'funding_round',\n      priority: data.amount_usd > 50000000 ? 'high' : 'medium',\n      title: `${data.round_type}: $${(data.amount_usd/1000000).toFixed(1)}M Raised`,\n      description: `Lead investors: ${data.lead_investors.join(', ')}`,\n      data: JSON.stringify(data),\n      created_at: new Date().toISOString()\n    });\n  }\n}\n\nreturn alerts.map(a => ({ json: a }));"
+      },
+      "id": "node-detect-large-rounds",
+      "name": "Detect Large Rounds",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1450, 300]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "alerts",
+        "columns": "company_id, alert_type, priority, title, description, data, created_at"
+      },
+      "id": "node-save-alerts",
+      "name": "Save Alerts",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1650, 300],
+      "credentials": { "postgres": { "id": "postgres-credentials", "name": "MedTech PostgreSQL DB" } }
+    }
+  ],
+  "connections": {
+    "Daily 8AM Trigger": { "main": [[{ "node": "Get Companies", "type": "main", "index": 0 }]] },
+    "Get Companies": { "main": [[{ "node": "Prepare Requests", "type": "main", "index": 0 }]] },
+    "Prepare Requests": { "main": [[{ "node": "Fetch Crunchbase Data", "type": "main", "index": 0 }]] },
+    "Fetch Crunchbase Data": { "main": [[{ "node": "Parse Funding Data", "type": "main", "index": 0 }]] },
+    "Parse Funding Data": { "main": [[{ "node": "Insert Funding Rounds", "type": "main", "index": 0 }]] },
+    "Insert Funding Rounds": { "main": [[{ "node": "Detect Large Rounds", "type": "main", "index": 0 }]] },
+    "Detect Large Rounds": { "main": [[{ "node": "Save Alerts", "type": "main", "index": 0 }]] }
+  },
+  "tags": [{ "name": "Funding", "id": "funding" }]
+}

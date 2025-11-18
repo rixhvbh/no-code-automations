@@ -1,0 +1,94 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: medtech-postgres
+    environment:
+      POSTGRES_DB: medtech_intel
+      POSTGRES_USER: medtech_user
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+      - ./database/seed_companies.sql:/docker-entrypoint-initdb.d/02-seed.sql
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U medtech_user -d medtech_intel"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - medtech-network
+
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: medtech-n8n
+    environment:
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=${N8N_USER}
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_PASSWORD}
+      - N8N_HOST=${N8N_HOST}
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=https
+      - WEBHOOK_URL=https://${N8N_HOST}
+      - GENERIC_TIMEZONE=America/New_York
+      - EXECUTIONS_DATA_SAVE_ON_SUCCESS=all
+      - EXECUTIONS_DATA_SAVE_ON_ERROR=all
+      - EXECUTIONS_DATA_SAVE_MANUAL_EXECUTIONS=true
+      # Database for n8n internal data
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=n8n
+      - DB_POSTGRESDB_USER=medtech_user
+      - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD}
+      # API Keys passed as environment variables
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - CRUNCHBASE_API_KEY=${CRUNCHBASE_API_KEY}
+      - APOLLO_API_KEY=${APOLLO_API_KEY}
+      - HUNTER_API_KEY=${HUNTER_API_KEY}
+      - ROCKETREACH_API_KEY=${ROCKETREACH_API_KEY}
+      - CLEARBIT_API_KEY=${CLEARBIT_API_KEY}
+      - PDFSHIFT_API_KEY=${PDFSHIFT_API_KEY}
+      - GOOGLE_DRIVE_FOLDER_ID=${GOOGLE_DRIVE_FOLDER_ID}
+      - CLIENT_EMAIL=${CLIENT_EMAIL}
+      - ADMIN_EMAIL=${ADMIN_EMAIL}
+    ports:
+      - "5678:5678"
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./workflows:/workflows:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - medtech-network
+
+  nginx:
+    image: nginx:alpine
+    container_name: medtech-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - n8n
+    restart: unless-stopped
+    networks:
+      - medtech-network
+
+volumes:
+  postgres_data:
+    driver: local
+  n8n_data:
+    driver: local
+
+networks:
+  medtech-network:
+    driver: bridge

@@ -1,0 +1,106 @@
+{
+  "name": "PubMed Research Monitor - Daily",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "cronExpression", "expression": "0 10 * * *" }]
+        }
+      },
+      "id": "trigger-daily",
+      "name": "Daily 10AM Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id, name FROM companies ORDER BY RANDOM() LIMIT 50"
+      },
+      "id": "node-get-companies",
+      "name": "Get Companies",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [450, 300],
+      "credentials": { "postgres": { "id": "postgres-credentials", "name": "MedTech PostgreSQL DB" } }
+    },
+    {
+      "parameters": {
+        "functionCode": "const companies = $input.all();\nconst requests = [];\n\nfor (const company of companies) {\n  const searchTerm = company.json.name;\n  const url = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi`;\n  const params = new URLSearchParams({\n    db: 'pubmed',\n    term: `${searchTerm}[Affiliation] AND (\"medical device\"[MeSH Terms] OR \"medical devices\"[All Fields])`,\n    retmode: 'json',\n    retmax: '20',\n    sort: 'date',\n    mindate: '2024/01/01',\n    datetype: 'pdat'\n  });\n  \n  requests.push({\n    company_id: company.json.id,\n    company_name: searchTerm,\n    url: `${url}?${params.toString()}`\n  });\n}\n\nreturn requests.map(r => ({ json: r }));"
+      },
+      "id": "node-prepare-search",
+      "name": "Prepare PubMed Search",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{$json.url}}",
+        "requestMethod": "GET",
+        "options": { "timeout": 30000 }
+      },
+      "id": "node-search-pubmed",
+      "name": "Search PubMed",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "const searchResult = $input.first().json;\nconst companyId = $node['Prepare PubMed Search'].json.company_id;\nconst pmids = searchResult.esearchresult?.idlist || [];\n\nif (pmids.length === 0) {\n  return [];\n}\n\nconst fetchUrl = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi';\nconst params = new URLSearchParams({\n  db: 'pubmed',\n  id: pmids.join(','),\n  retmode: 'xml'\n});\n\nreturn [{\n  json: {\n    company_id: companyId,\n    pmids: pmids,\n    url: `${fetchUrl}?${params.toString()}`\n  }\n}];"
+      },
+      "id": "node-prepare-fetch",
+      "name": "Prepare Details Fetch",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1050, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{$json.url}}",
+        "requestMethod": "GET"
+      },
+      "id": "node-fetch-details",
+      "name": "Fetch Publication Details",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1250, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Simplified XML parsing - use proper XML parser in production\nconst xmlData = $input.first().json.body || $input.first().json;\nconst companyId = $node['Prepare Details Fetch'].json.company_id;\nconst publications = [];\n\ntry {\n  // Parse XML to extract publication data\n  // This is simplified - use xml2js or similar library in production\n  \n  const pmidRegex = /<PMID[^>]*>(.*?)<\\/PMID>/g;\n  const titleRegex = /<ArticleTitle>(.*?)<\\/ArticleTitle>/g;\n  const abstractRegex = /<AbstractText>(.*?)<\\/AbstractText>/gs;\n  const journalRegex = /<Title>(.*?)<\\/Title>/g;\n  \n  const pmids = [...xmlData.matchAll(pmidRegex)].map(m => m[1]);\n  const titles = [...xmlData.matchAll(titleRegex)].map(m => m[1].replace(/<[^>]+>/g, ''));\n  const abstracts = [...xmlData.matchAll(abstractRegex)].map(m => m[1].replace(/<[^>]+>/g, ''));\n  const journals = [...xmlData.matchAll(journalRegex)].map(m => m[1]);\n  \n  for (let i = 0; i < pmids.length; i++) {\n    publications.push({\n      company_id: companyId,\n      pmid: pmids[i],\n      title: titles[i] || '',\n      abstract: abstracts[i] || '',\n      journal: journals[i] || '',\n      publication_date: new Date().toISOString().split('T')[0],\n      citation_count: 0,\n      raw_data: JSON.stringify({ pmid: pmids[i] })\n    });\n  }\n} catch (error) {\n  console.error('XML parse error:', error.message);\n}\n\nreturn publications.map(p => ({ json: p }));"
+      },
+      "id": "node-parse-publications",
+      "name": "Parse Publications",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1450, 300]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "publications",
+        "columns": "company_id, pmid, title, abstract, journal, publication_date, citation_count, raw_data",
+        "options": { "skipOnConflict": true }
+      },
+      "id": "node-insert-publications",
+      "name": "Insert Publications",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1650, 300],
+      "credentials": { "postgres": { "id": "postgres-credentials", "name": "MedTech PostgreSQL DB" } }
+    }
+  ],
+  "connections": {
+    "Daily 10AM Trigger": { "main": [[{ "node": "Get Companies", "type": "main", "index": 0 }]] },
+    "Get Companies": { "main": [[{ "node": "Prepare PubMed Search", "type": "main", "index": 0 }]] },
+    "Prepare PubMed Search": { "main": [[{ "node": "Search PubMed", "type": "main", "index": 0 }]] },
+    "Search PubMed": { "main": [[{ "node": "Prepare Details Fetch", "type": "main", "index": 0 }]] },
+    "Prepare Details Fetch": { "main": [[{ "node": "Fetch Publication Details", "type": "main", "index": 0 }]] },
+    "Fetch Publication Details": { "main": [[{ "node": "Parse Publications", "type": "main", "index": 0 }]] },
+    "Parse Publications": { "main": [[{ "node": "Insert Publications", "type": "main", "index": 0 }]] }
+  },
+  "tags": [{ "name": "Research", "id": "pubmed" }]
+}

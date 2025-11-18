@@ -1,0 +1,115 @@
+{
+  "name": "Centralized Slack Alert System - Webhook",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "send-alert",
+        "responseMode": "responseNode"
+      },
+      "id": "trigger-webhook",
+      "name": "Alert Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "const inputData = $input.first().json;\nconst requestData = inputData.body || inputData;\n\n// Validate required fields\nif (!requestData.alert_type || !requestData.title) {\n  throw new Error('alert_type and title are required');\n}\n\n// Calculate priority score\nconst priorityScores = {\n  critical: 4,\n  high: 3,\n  medium: 2,\n  low: 1\n};\n\nconst priority = requestData.priority || 'medium';\nconst priorityScore = priorityScores[priority] || 2;\n\nreturn [{\n  json: {\n    company_id: requestData.company_id || null,\n    alert_type: requestData.alert_type,\n    priority: priority,\n    priority_score: priorityScore,\n    title: requestData.title,\n    description: requestData.description || '',\n    data: requestData.data || {},\n    action_url: requestData.action_url || null,\n    created_at: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "node-validate",
+      "name": "Validate & Score Alert",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "combineOperation": "any"
+          },
+          "conditions": [\n            { "leftValue": "={{$json.priority}}", "rightValue": "critical", "operator": { "type": "string", "operation": "equals" } },\n            { "leftValue": "={{$json.priority}}", "rightValue": "high", "operator": { "type": "string", "operation": "equals" } }\n          ]
+        }
+      },
+      "id": "node-switch-priority",
+      "name": "Route by Priority",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.1,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "const alert = $input.first().json;\n\n// Priority-based emoji and styling\nconst priorityEmojis = {\n  critical: '🚨',\n  high: '⚠️',\n  medium: 'ℹ️',\n  low: '📝'\n};\n\nconst priorityColors = {\n  critical: '#FF0000',\n  high: '#FF6600',\n  medium: '#3498db',\n  low: '#95a5a6'\n};\n\nconst emoji = priorityEmojis[alert.priority] || 'ℹ️';\nconst color = priorityColors[alert.priority] || '#3498db';\n\nconst slackMessage = {\n  channel: alert.priority === 'critical' || alert.priority === 'high' ? '#medtech-critical-alerts' : '#medtech-alerts',\n  text: `${emoji} *${alert.title}*`,\n  blocks: [\n    {\n      type: 'header',\n      text: {\n        type: 'plain_text',\n        text: `${emoji} ${alert.title}`\n      }\n    },\n    {\n      type: 'section',\n      text: {\n        type: 'mrkdwn',\n        text: alert.description\n      }\n    },\n    {\n      type: 'context',\n      elements: [\n        {\n          type: 'mrkdwn',\n          text: `*Type:* ${alert.alert_type} | *Priority:* ${alert.priority.toUpperCase()} | *Time:* ${new Date(alert.created_at).toLocaleString()}`\n        }\n      ]\n    }\n  ],\n  attachments: [{\n    color: color,\n    fields: []\n  }]\n};\n\n// Add action button if URL provided\nif (alert.action_url) {\n  slackMessage.blocks.push({\n    type: 'actions',\n    elements: [\n      {\n        type: 'button',\n        text: { type: 'plain_text', text: 'View Details' },\n        url: alert.action_url,\n        style: alert.priority === 'critical' ? 'danger' : 'primary'\n      }\n    ]\n  });\n}\n\nreturn [{ json: slackMessage }];"
+      },
+      "id": "node-format-slack",
+      "name": "Format Slack Message",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [850, 200]
+    },
+    {
+      "parameters": {
+        "channel": "={{$json.channel}}",
+        "text": "={{$json.text}}",
+        "otherOptions": {
+          "blocks": "={{JSON.stringify($json.blocks)}}",
+          "attachments": "={{JSON.stringify($json.attachments)}}"
+        }
+      },
+      "id": "node-send-slack",
+      "name": "Send to Slack",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [1050, 200],
+      "credentials": {
+        "slackApi": {
+          "id": "slack-credentials",
+          "name": "Slack"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "alerts",
+        "columns": "company_id, alert_type, priority, title, description, data, action_url, sent_to_slack, sent_at, created_at",
+        "additionalFields": {
+          "sent_to_slack": true,
+          "sent_at": "={{new Date().toISOString()}}"
+        }
+      },
+      "id": "node-save-alert",
+      "name": "Save Alert to DB",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1250, 200],
+      "credentials": { "postgres": { "id": "postgres-credentials", "name": "MedTech PostgreSQL DB" } }
+    },
+    {
+      "parameters": {
+        "options": {
+          "responseCode": 200
+        },
+        "respondWith": "json",
+        "responseBody": "{\"success\": true, \"message\": \"Alert sent successfully\"}"
+      },
+      "id": "node-response",
+      "name": "Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [1450, 300]
+    }
+  ],
+  "connections": {
+    "Alert Webhook": { "main": [[{ "node": "Validate & Score Alert", "type": "main", "index": 0 }]] },
+    "Validate & Score Alert": { "main": [[{ "node": "Route by Priority", "type": "main", "index": 0 }]] },
+    "Route by Priority": { "main": [[
+      { "node": "Format Slack Message", "type": "main", "index": 0 }
+    ]] },
+    "Format Slack Message": { "main": [[{ "node": "Send to Slack", "type": "main", "index": 0 }]] },
+    "Send to Slack": { "main": [[{ "node": "Save Alert to DB", "type": "main", "index": 0 }]] },
+    "Save Alert to DB": { "main": [[{ "node": "Response", "type": "main", "index": 0 }]] }
+  },
+  "tags": [{ "name": "Alerts", "id": "alerts" }]
+}

@@ -1,0 +1,162 @@
+{
+  "name": "Error Recovery & Retry System",
+  "nodes": [
+    {
+      "parameters": {
+        "errorWorkflow": true
+      },
+      "id": "trigger-error",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Analyze error and determine retry strategy\nconst error = $input.first().json.error;\nconst execution = $input.first().json.execution;\n\nconst errorMessage = error.message || 'Unknown error';\nconst workflowName = execution.workflowData?.name || 'Unknown workflow';\nconst executionId = execution.id;\n\n// Categorize error type\nlet errorCategory = 'unknown';\nlet shouldRetry = false;\nlet retryDelay = 0;\n\n// Network errors - retry with backoff\nif (errorMessage.includes('ECONNREFUSED') || \n    errorMessage.includes('ETIMEDOUT') || \n    errorMessage.includes('timeout') ||\n    errorMessage.includes('socket hang up')) {\n  errorCategory = 'network';\n  shouldRetry = true;\n  retryDelay = 30; // 30 seconds\n}\n\n// Rate limiting - retry with longer delay\nif (errorMessage.includes('429') || \n    errorMessage.includes('rate limit') ||\n    errorMessage.includes('Too Many Requests')) {\n  errorCategory = 'rate_limit';\n  shouldRetry = true;\n  retryDelay = 300; // 5 minutes\n}\n\n// API authentication errors - don't retry\nif (errorMessage.includes('401') || \n    errorMessage.includes('403') ||\n    errorMessage.includes('Unauthorized') ||\n    errorMessage.includes('Forbidden')) {\n  errorCategory = 'auth';\n  shouldRetry = false;\n}\n\n// Data validation errors - don't retry\nif (errorMessage.includes('required') || \n    errorMessage.includes('validation') ||\n    errorMessage.includes('invalid')) {\n  errorCategory = 'validation';\n  shouldRetry = false;\n}\n\n// Server errors - retry once\nif (errorMessage.includes('500') || \n    errorMessage.includes('502') ||\n    errorMessage.includes('503')) {\n  errorCategory = 'server_error';\n  shouldRetry = true;\n  retryDelay = 60; // 1 minute\n}\n\nreturn [{\n  json: {\n    error_message: errorMessage,\n    error_category: errorCategory,\n    workflow_name: workflowName,\n    execution_id: executionId,\n    should_retry: shouldRetry,\n    retry_delay_seconds: retryDelay,\n    timestamp: new Date().toISOString(),\n    error_stack: error.stack?.substring(0, 500) || ''\n  }\n}];"
+      },
+      "id": "node-analyze-error",
+      "name": "Analyze Error",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "workflow_logs",
+        "columns": "workflow_name, execution_id, status, start_time, errors",
+        "additionalFields": {
+          "status": "failure",
+          "errors": "=[{{JSON.stringify($json)}}]"
+        }
+      },
+      "id": "node-log-error",
+      "name": "Log Error to Database",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [650, 300],
+      "credentials": { "postgres": { "id": "postgres-credentials", "name": "MedTech PostgreSQL DB" } }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$json.should_retry}}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "node-check-retry",
+      "name": "Should Retry?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.1,
+      "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "amount": "={{$json.retry_delay_seconds}}",
+        "unit": "seconds"
+      },
+      "id": "node-wait",
+      "name": "Wait Before Retry",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [1050, 200]
+    },
+    {
+      "parameters": {
+        "channel": "#medtech-errors",
+        "text": "=🔄 *Retrying Failed Workflow*\\n*Workflow:* {{$json.workflow_name}}\\n*Error:* {{$json.error_category}}\\n*Retry in:* {{$json.retry_delay_seconds}}s",
+        "otherOptions": {}
+      },
+      "id": "node-notify-retry",
+      "name": "Notify Retry Attempt",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [1250, 200],
+      "credentials": {
+        "slackApi": {
+          "id": "slack-credentials",
+          "name": "Slack"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "channel": "#medtech-errors",
+        "text": "=❌ *Workflow Failed - Manual Intervention Required*\\n\\n*Workflow:* {{$json.workflow_name}}\\n*Execution ID:* {{$json.execution_id}}\\n*Error Category:* {{$json.error_category}}\\n*Error:* {{$json.error_message}}\\n*Time:* {{$json.timestamp}}\\n\\n*Stack Trace:*\\n```{{$json.error_stack}}```",
+        "otherOptions": {}
+      },
+      "id": "node-notify-failure",
+      "name": "Notify Critical Failure",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [1050, 400],
+      "credentials": {
+        "slackApi": {
+          "id": "slack-credentials",
+          "name": "Slack"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "combineOperation": "any"
+          },
+          "conditions": [
+            { "leftValue": "={{$json.error_category}}", "rightValue": "auth", "operator": { "type": "string", "operation": "equals" } },
+            { "leftValue": "={{$json.error_category}}", "rightValue": "validation", "operator": { "type": "string", "operation": "equals" } }
+          ]
+        }
+      },
+      "id": "node-check-critical",
+      "name": "Is Critical Error?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.1,
+      "position": [1250, 400]
+    },
+    {
+      "parameters": {
+        "fromEmail": "alerts@medtechinsights.com",
+        "toEmail": "={{$env.ADMIN_EMAIL}}",
+        "subject": "=CRITICAL: {{$json.workflow_name}} Failure Requires Attention",
+        "emailType": "html",
+        "message": "=<h2>Critical Workflow Failure</h2><p><strong>Workflow:</strong> {{$json.workflow_name}}</p><p><strong>Error:</strong> {{$json.error_message}}</p><p><strong>Category:</strong> {{$json.error_category}}</p><p><strong>Execution ID:</strong> {{$json.execution_id}}</p><p><strong>Action Required:</strong> This error requires manual intervention.</p>"
+      },
+      "id": "node-email-admin",
+      "name": "Email Admin",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.2,
+      "position": [1450, 500],
+      "credentials": {
+        "smtp": {
+          "id": "smtp-credentials",
+          "name": "SMTP"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Error Trigger": { "main": [[{ "node": "Analyze Error", "type": "main", "index": 0 }]] },
+    "Analyze Error": { "main": [[{ "node": "Log Error to Database", "type": "main", "index": 0 }]] },
+    "Log Error to Database": { "main": [[{ "node": "Should Retry?", "type": "main", "index": 0 }]] },
+    "Should Retry?": { "main": [
+      [{ "node": "Wait Before Retry", "type": "main", "index": 0 }],
+      [{ "node": "Notify Critical Failure", "type": "main", "index": 0 }]
+    ]},
+    "Wait Before Retry": { "main": [[{ "node": "Notify Retry Attempt", "type": "main", "index": 0 }]] },
+    "Notify Critical Failure": { "main": [[{ "node": "Is Critical Error?", "type": "main", "index": 0 }]] },
+    "Is Critical Error?": { "main": [
+      [{ "node": "Email Admin", "type": "main", "index": 0 }]
+    ]}
+  },
+  "settings": {
+    "errorWorkflow": true
+  },
+  "tags": [{ "name": "Error Handling", "id": "errors" }]
+}

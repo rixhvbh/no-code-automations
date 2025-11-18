@@ -1,0 +1,524 @@
+{
+  "name": "FDA 510(k) Scraper - Daily Monitor",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 6 * * *"
+            }
+          ]
+        }
+      },
+      "id": "node-trigger-cron",
+      "name": "Daily 6AM UTC Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Log workflow start\nconst workflowStartTime = new Date();\n\nreturn [{\n  json: {\n    workflow_name: 'fda_510k_scraper',\n    execution_id: $execution.id,\n    start_time: workflowStartTime.toISOString(),\n    status: 'started'\n  }\n}];"
+      },
+      "id": "node-init-workflow",
+      "name": "Initialize Workflow",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT scraper_name, last_item_date, state_data FROM scraper_state WHERE scraper_name = 'fda_510k_scraper' LIMIT 1",
+        "options": {}
+      },
+      "id": "node-get-scraper-state",
+      "name": "Get Last Scraper State",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [650, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credentials",
+          "name": "MedTech PostgreSQL DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Prepare FDA 510k search parameters\nconst scraperState = $input.first().json;\nconst lastItemDate = scraperState.last_item_date || '2024-01-01';\n\n// FDA 510k database search URL\nconst baseUrl = 'https://www.accessdata.fda.gov/scripts/cdrh/cfdocs/cfpmn/pmn.cfm';\n\n// Build search parameters for recent submissions\nconst searchParams = {\n  start: lastItemDate,\n  pagenum: 1,\n  sortcolumn: 'decisiondate',\n  sortorder: 'DESC'\n};\n\nreturn [{\n  json: {\n    url: baseUrl,\n    params: searchParams,\n    method: 'GET',\n    last_check_date: lastItemDate\n  }\n}];"
+      },
+      "id": "node-prepare-request",
+      "name": "Prepare FDA Request",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{$json.url}}",
+        "authentication": "none",
+        "requestMethod": "GET",
+        "options": {
+          "timeout": 30000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": true,
+              "maxRedirects": 5
+            }
+          }
+        }
+      },
+      "id": "node-fetch-fda-data",
+      "name": "Fetch FDA 510k Data",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1050, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Parse FDA 510k HTML response\nconst htmlContent = $input.first().json.body || $input.first().json;\nconst items = [];\n\ntry {\n  // In production, use Puppeteer or Cheerio for proper HTML parsing\n  // This is a simplified example - actual implementation needs HTML parser\n  \n  // Simulated parsing logic (replace with actual HTML parsing)\n  // Extract table rows from FDA 510k results page\n  \n  const regex = /<tr[^>]*>(.*?)<\\/tr>/gis;\n  const matches = htmlContent.match(regex) || [];\n  \n  // Skip header row\n  for (let i = 1; i < Math.min(matches.length, 100); i++) {\n    const row = matches[i];\n    \n    // Extract cells (simplified - use proper HTML parser)\n    const cellRegex = /<td[^>]*>(.*?)<\\/td>/gis;\n    const cells = [...row.matchAll(cellRegex)].map(m => m[1].replace(/<[^>]*>/g, '').trim());\n    \n    if (cells.length >= 5) {\n      items.push({\n        fda_number: cells[0],\n        applicant_name: cells[1],\n        device_name: cells[2],\n        approval_date: cells[3],\n        decision: cells[4],\n        product_code: cells[5] || '',\n        scraped_at: new Date().toISOString()\n      });\n    }\n  }\n  \n  console.log(`Parsed ${items.length} FDA 510k records`);\n  \n  return items.map(item => ({ json: item }));\n  \n} catch (error) {\n  console.error('Error parsing FDA data:', error.message);\n  return [{\n    json: {\n      error: true,\n      message: error.message,\n      items_parsed: 0\n    }\n  }];\n}"
+      },
+      "id": "node-parse-html",
+      "name": "Parse HTML Results",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1250, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Use OpenAI to extract company names and match to database\nconst items = $input.all();\nconst enrichedItems = [];\n\nfor (const item of items) {\n  const data = item.json;\n  \n  // Skip error items\n  if (data.error) continue;\n  \n  // Extract company name variations\n  let companyName = data.applicant_name;\n  \n  // Clean up company name (remove Inc, LLC, Corp, etc.)\n  companyName = companyName\n    .replace(/\\s+(Inc\\.?|LLC|Corp\\.?|Corporation|Ltd\\.?|Limited|Co\\.?)$/i, '')\n    .trim();\n  \n  enrichedItems.push({\n    ...data,\n    company_name_cleaned: companyName,\n    approval_type: '510k'\n  });\n}\n\nreturn enrichedItems.map(item => ({ json: item }));"
+      },
+      "id": "node-enrich-entities",
+      "name": "Extract Company Entities",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1450, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=SELECT id, name FROM companies WHERE LOWER(name) LIKE LOWER('%{{$json.company_name_cleaned}}%') LIMIT 1",
+        "options": {}
+      },
+      "id": "node-find-company",
+      "name": "Find Company in DB",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1650, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credentials",
+          "name": "MedTech PostgreSQL DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Merge FDA data with company IDs\nconst fdaData = $input.all();\nconst results = [];\n\nfor (const item of fdaData) {\n  const data = item.json;\n  \n  // Check if company was found\n  const companyId = data.id || null;\n  \n  results.push({\n    company_id: companyId,\n    approval_type: '510k',\n    device_name: data.device_name,\n    device_classification: data.product_code,\n    product_code: data.product_code,\n    approval_date: data.approval_date,\n    fda_number: data.fda_number,\n    applicant_name: data.applicant_name,\n    decision: data.decision,\n    source_url: `https://www.accessdata.fda.gov/scripts/cdrh/cfdocs/cfpmn/pmn.cfm?ID=${data.fda_number}`,\n    raw_data: JSON.stringify(data),\n    created_at: new Date().toISOString()\n  });\n}\n\nreturn results.map(r => ({ json: r }));"
+      },
+      "id": "node-prepare-insert",
+      "name": "Prepare Insert Data",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1850, 300]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "fda_approvals",
+        "columns": "company_id, approval_type, device_name, device_classification, product_code, approval_date, fda_number, applicant_name, decision, source_url, raw_data",
+        "options": {
+          "skipOnConflict": true
+        }
+      },
+      "id": "node-insert-approvals",
+      "name": "Insert FDA Approvals",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [2050, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credentials",
+          "name": "MedTech PostgreSQL DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Identify high-priority approvals for alerts\nconst approvals = $input.all();\nconst alerts = [];\n\nfor (const approval of approvals) {\n  const data = approval.json;\n  \n  // Check if this is a high-priority approval\n  const isHighPriority = \n    data.decision === 'Substantially Equivalent (SESE)' ||\n    data.device_name.toLowerCase().includes('cardiovascular') ||\n    data.device_name.toLowerCase().includes('surgical') ||\n    data.device_name.toLowerCase().includes('implant');\n  \n  if (isHighPriority && data.company_id) {\n    alerts.push({\n      company_id: data.company_id,\n      alert_type: 'fda_approval',\n      priority: 'high',\n      title: `New 510(k) Approval: ${data.device_name}`,\n      description: `${data.applicant_name} received 510(k) clearance for ${data.device_name} on ${data.approval_date}`,\n      data: JSON.stringify(data),\n      action_url: data.source_url,\n      created_at: new Date().toISOString()\n    });\n  }\n}\n\nconsole.log(`Generated ${alerts.length} high-priority alerts`);\n\nif (alerts.length > 0) {\n  return alerts.map(a => ({ json: a }));\n} else {\n  // Return empty result to skip alert creation\n  return [];\n}"
+      },
+      "id": "node-check-priority",
+      "name": "Identify High-Priority Approvals",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [2250, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "combineOperation": "any"
+          },
+          "conditions": [
+            {
+              "id": "condition-has-alerts",
+              "leftValue": "={{$input.all().length}}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ]
+        }
+      },
+      "id": "node-if-alerts",
+      "name": "Has Alerts?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.1,
+      "position": [2450, 300]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "alerts",
+        "columns": "company_id, alert_type, priority, title, description, data, action_url, created_at",
+        "options": {}
+      },
+      "id": "node-save-alerts",
+      "name": "Save Alerts to DB",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [2650, 200],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credentials",
+          "name": "MedTech PostgreSQL DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Format Slack alert message\nconst alerts = $input.all();\nconst messages = [];\n\nfor (const alert of alerts) {\n  const data = alert.json;\n  \n  const message = {\n    text: `🚨 *${data.title}*`,\n    blocks: [\n      {\n        type: 'header',\n        text: {\n          type: 'plain_text',\n          text: data.title\n        }\n      },\n      {\n        type: 'section',\n        text: {\n          type: 'mrkdwn',\n          text: data.description\n        }\n      },\n      {\n        type: 'section',\n        fields: [\n          {\n            type: 'mrkdwn',\n            text: `*Priority:*\\n${data.priority.toUpperCase()}`\n          },\n          {\n            type: 'mrkdwn',\n            text: `*Type:*\\nFDA 510(k) Approval`\n          }\n        ]\n      },\n      {\n        type: 'actions',\n        elements: [\n          {\n            type: 'button',\n            text: {\n              type: 'plain_text',\n              text: 'View FDA Record'\n            },\n            url: data.action_url,\n            style: 'primary'\n          }\n        ]\n      }\n    ]\n  };\n  \n  messages.push(message);\n}\n\nreturn messages.map(m => ({ json: m }));"
+      },
+      "id": "node-format-slack",
+      "name": "Format Slack Messages",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [2850, 200]
+    },
+    {
+      "parameters": {
+        "channel": "#medtech-alerts",
+        "text": "={{$json.text}}",
+        "otherOptions": {
+          "blocks": "={{JSON.stringify($json.blocks)}}"
+        }
+      },
+      "id": "node-send-slack",
+      "name": "Send to Slack",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [3050, 200],
+      "credentials": {
+        "slackApi": {
+          "id": "slack-credentials",
+          "name": "Slack Workspace"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE alerts SET sent_to_slack = true, sent_at = NOW() WHERE id = '={{$json.id}}'",
+        "options": {}
+      },
+      "id": "node-mark-sent",
+      "name": "Mark Alerts as Sent",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [3250, 200],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credentials",
+          "name": "MedTech PostgreSQL DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE scraper_state SET last_run_at = NOW(), last_success_at = NOW(), last_item_date = CURRENT_DATE WHERE scraper_name = 'fda_510k_scraper'",
+        "options": {}
+      },
+      "id": "node-update-state",
+      "name": "Update Scraper State",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [2450, 400],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credentials",
+          "name": "MedTech PostgreSQL DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Calculate workflow statistics\nconst startTime = $node['Initialize Workflow'].json.start_time;\nconst endTime = new Date();\nconst duration = (endTime - new Date(startTime)) / 1000;\n\nconst recordsProcessed = $input.all().length || 0;\n\nreturn [{\n  json: {\n    workflow_name: 'fda_510k_scraper',\n    execution_id: $execution.id,\n    status: 'success',\n    start_time: startTime,\n    end_time: endTime.toISOString(),\n    duration_seconds: Math.round(duration),\n    records_processed: recordsProcessed,\n    records_inserted: recordsProcessed,\n    records_updated: 0,\n    records_failed: 0,\n    errors: [],\n    metadata: {\n      alerts_created: $node['Identify High-Priority Approvals']?.json?.length || 0\n    }\n  }\n}];"
+      },
+      "id": "node-log-stats",
+      "name": "Calculate Statistics",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [2650, 400]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "workflow_logs",
+        "columns": "workflow_name, execution_id, status, start_time, end_time, duration_seconds, records_processed, records_inserted, records_updated, records_failed, errors, metadata",
+        "options": {}
+      },
+      "id": "node-save-log",
+      "name": "Log Workflow Execution",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [2850, 400],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credentials",
+          "name": "MedTech PostgreSQL DB"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Daily 6AM UTC Trigger": {
+      "main": [
+        [
+          {
+            "node": "Initialize Workflow",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Initialize Workflow": {
+      "main": [
+        [
+          {
+            "node": "Get Last Scraper State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Last Scraper State": {
+      "main": [
+        [
+          {
+            "node": "Prepare FDA Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare FDA Request": {
+      "main": [
+        [
+          {
+            "node": "Fetch FDA 510k Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch FDA 510k Data": {
+      "main": [
+        [
+          {
+            "node": "Parse HTML Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse HTML Results": {
+      "main": [
+        [
+          {
+            "node": "Extract Company Entities",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Company Entities": {
+      "main": [
+        [
+          {
+            "node": "Find Company in DB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Company in DB": {
+      "main": [
+        [
+          {
+            "node": "Prepare Insert Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Insert Data": {
+      "main": [
+        [
+          {
+            "node": "Insert FDA Approvals",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert FDA Approvals": {
+      "main": [
+        [
+          {
+            "node": "Identify High-Priority Approvals",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Identify High-Priority Approvals": {
+      "main": [
+        [
+          {
+            "node": "Has Alerts?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Alerts?": {
+      "main": [
+        [
+          {
+            "node": "Save Alerts to DB",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Update Scraper State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Alerts to DB": {
+      "main": [
+        [
+          {
+            "node": "Format Slack Messages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Slack Messages": {
+      "main": [
+        [
+          {
+            "node": "Send to Slack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send to Slack": {
+      "main": [
+        [
+          {
+            "node": "Mark Alerts as Sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Alerts as Sent": {
+      "main": [
+        [
+          {
+            "node": "Update Scraper State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Scraper State": {
+      "main": [
+        [
+          {
+            "node": "Calculate Statistics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Statistics": {
+      "main": [
+        [
+          {
+            "node": "Log Workflow Execution",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "Medical Device Intelligence",
+      "id": "medtech"
+    },
+    {
+      "name": "FDA",
+      "id": "fda"
+    }
+  ],
+  "triggerCount": 1,
+  "updatedAt": "2025-11-18T00:00:00.000Z",
+  "versionId": "1"
+}
