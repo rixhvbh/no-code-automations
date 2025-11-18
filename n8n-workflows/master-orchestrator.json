@@ -1,0 +1,475 @@
+{
+  "name": "IBOVI Master Orchestrator",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ibovi/orchestrator",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [250, 300],
+      "webhookId": "ibovi-orchestrator"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 */6 * * *"
+            }
+          ]
+        }
+      },
+      "id": "cron-trigger",
+      "name": "Cron Trigger (Every 6 hours)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [250, 500]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Master Orchestrator Function\nconst inputData = $input.first().json;\nconst requestData = inputData.body || inputData;\n\n// Configuration\nconst config = {\n  platforms: requestData.platforms || ['indeed_us', 'indeed_uk', 'linkedin'],\n  searchQuery: requestData.searchQuery || 'software engineer',\n  location: requestData.location || 'Remote',\n  maxResults: requestData.maxResults || 100,\n  minQualityScore: requestData.minQualityScore || 70,\n  enableVerification: requestData.enableVerification !== false,\n  enableEnrichment: requestData.enableEnrichment !== false,\n  deliverToSheets: requestData.deliverToSheets !== false,\n  deliverToSlack: requestData.deliverToSlack !== false,\n};\n\n// Log orchestration start\nconsole.log('IBOVI Master Orchestrator Started', config);\n\n// Create workflow execution metadata\nconst execution = {\n  executionId: $execution.id,\n  startTime: new Date().toISOString(),\n  config: config,\n  status: 'initialized',\n  platforms: config.platforms,\n};\n\nreturn [{\n  json: {\n    success: true,\n    execution: execution,\n    config: config,\n  }\n}];"
+      },
+      "id": "init-orchestrator",
+      "name": "Initialize Orchestrator",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [450, 400]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "platform",
+              "name": "platform",
+              "value": "={{ $json.platforms }}",
+              "type": "array"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "split-platforms",
+      "name": "Split Into Platforms",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [650, 400]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "loop-platforms",
+      "name": "Loop Through Platforms",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3.1,
+      "position": [850, 400]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Scraping Function\nconst platform = $json.platform;\nconst config = $node['Initialize Orchestrator'].json.config;\n\nconsole.log(`Scraping platform: ${platform}`);\n\n// In production, this would call the actual scraper service\n// For now, return mock data structure\nconst scrapingJob = {\n  platform: platform,\n  searchQuery: config.searchQuery,\n  location: config.location,\n  maxResults: config.maxResults,\n  status: 'pending',\n  startTime: new Date().toISOString(),\n};\n\nreturn [{\n  json: {\n    job: scrapingJob,\n    webhookUrl: `http://localhost:3000/api/scrape/${platform}`,\n  }\n}];"
+      },
+      "id": "prepare-scrape",
+      "name": "Prepare Scraping Job",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1050, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.webhookUrl }}",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "searchQuery",
+              "value": "={{ $json.job.searchQuery }}"
+            },
+            {
+              "name": "location",
+              "value": "={{ $json.job.location }}"
+            },
+            {
+              "name": "maxResults",
+              "value": "={{ $json.job.maxResults }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "id": "call-scraper",
+      "name": "Call Scraper API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1250, 400]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Process scraped candidates\nconst scrapedData = $json;\nconst candidates = scrapedData.candidates || [];\n\nconsole.log(`Processing ${candidates.length} candidates`);\n\n// In production, this calls the DataProcessor service\n// Mock processing for now\nconst processed = candidates.map(candidate => ({\n  ...candidate,\n  processed: true,\n  processedAt: new Date().toISOString(),\n}));\n\nreturn [{\n  json: {\n    candidates: processed,\n    stats: {\n      total: candidates.length,\n      processed: processed.length,\n    },\n  }\n}];"
+      },
+      "id": "process-candidates",
+      "name": "Process Candidates",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1450, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "enable-verification",
+              "leftValue": "={{ $node['Initialize Orchestrator'].json.config.enableVerification }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-verification",
+      "name": "Check if Verification Enabled",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.1,
+      "position": [1650, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:3000/api/verify",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "candidates",
+              "value": "={{ $json.candidates }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "verify-emails",
+      "name": "Verify Emails",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1850, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:3000/api/enrich",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "candidates",
+              "value": "={{ $json.candidates }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "enrich-data",
+      "name": "Enrich Company Data",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2050, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:3000/api/storage/save",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "candidates",
+              "value": "={{ $json.candidates }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "save-to-database",
+      "name": "Save to Database",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2250, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:3000/api/delivery/sheets",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "candidates",
+              "value": "={{ $json.candidates }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "sync-to-sheets",
+      "name": "Sync to Google Sheets",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2450, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:3000/api/delivery/slack",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "candidates",
+              "value": "={{ $json.candidates }}"
+            },
+            {
+              "name": "summary",
+              "value": "={{ $json.stats }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "notify-slack",
+      "name": "Send Slack Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2450, 500]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Final Summary\nconst candidates = $json.candidates || [];\nconst config = $node['Initialize Orchestrator'].json.config;\nconst execution = $node['Initialize Orchestrator'].json.execution;\n\nconst summary = {\n  success: true,\n  executionId: execution.executionId,\n  startTime: execution.startTime,\n  endTime: new Date().toISOString(),\n  platforms: config.platforms,\n  totalCandidates: candidates.length,\n  highQualityCandidates: candidates.filter(c => c.overall_quality_score >= 80).length,\n  verifiedEmails: candidates.filter(c => c.email_verified).length,\n  message: `Successfully processed ${candidates.length} candidates from ${config.platforms.length} platforms`,\n};\n\nconsole.log('IBOVI Orchestration Complete', summary);\n\nreturn [{ json: summary }];"
+      },
+      "id": "create-summary",
+      "name": "Create Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2650, 400]
+    },
+    {
+      "parameters": {
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "respond-success",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [2850, 400]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Initialize Orchestrator",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cron Trigger (Every 6 hours)": {
+      "main": [
+        [
+          {
+            "node": "Initialize Orchestrator",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Initialize Orchestrator": {
+      "main": [
+        [
+          {
+            "node": "Split Into Platforms",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Into Platforms": {
+      "main": [
+        [
+          {
+            "node": "Loop Through Platforms",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Through Platforms": {
+      "main": [
+        [
+          {
+            "node": "Prepare Scraping Job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Scraping Job": {
+      "main": [
+        [
+          {
+            "node": "Call Scraper API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Scraper API": {
+      "main": [
+        [
+          {
+            "node": "Process Candidates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Candidates": {
+      "main": [
+        [
+          {
+            "node": "Check if Verification Enabled",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check if Verification Enabled": {
+      "main": [
+        [
+          {
+            "node": "Verify Emails",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Save to Database",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Emails": {
+      "main": [
+        [
+          {
+            "node": "Enrich Company Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enrich Company Data": {
+      "main": [
+        [
+          {
+            "node": "Save to Database",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save to Database": {
+      "main": [
+        [
+          {
+            "node": "Sync to Google Sheets",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Send Slack Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sync to Google Sheets": {
+      "main": [
+        [
+          {
+            "node": "Create Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Slack Notification": {
+      "main": [
+        [
+          {
+            "node": "Create Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Summary": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 2,
+  "updatedAt": "2024-01-15T00:00:00.000Z",
+  "versionId": "1"
+}
