@@ -1,0 +1,855 @@
+{
+  "name": "LinkedIn HR Contact Discovery Chain",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "linkedin-hr-discovery",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-trigger-001",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [240, 300],
+      "webhookId": "linkedin-hr-discovery-webhook"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Input Validation and Default Setting\nconst inputData = $input.first().json;\nconst requestData = inputData.body || inputData;\n\n// Validate required LinkedIn URL\nif (!requestData.linkedin_company_url) {\n  throw new Error('linkedin_company_url is required');\n}\n\n// Validate URL format\nconst linkedinUrlPattern = /linkedin\\.com\\/company\\//i;\nif (!linkedinUrlPattern.test(requestData.linkedin_company_url)) {\n  throw new Error('Invalid LinkedIn company URL format');\n}\n\n// Set defaults\nconst config = {\n  linkedin_company_url: requestData.linkedin_company_url,\n  job_title_filters: requestData.job_title_filters || [\n    \"recruiter\", \"talent acquisition\", \"hr manager\", \"human resources\",\n    \"people operations\", \"hiring manager\", \"talent partner\"\n  ],\n  min_quality_score: requestData.min_quality_score || 60,\n  batch_size: requestData.batch_size || 5,\n  hot_threshold: requestData.hot_threshold || 80,\n  warm_threshold: requestData.warm_threshold || 60,\n  request_id: `hr-disco-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,\n  start_time: new Date().toISOString()\n};\n\nreturn [{\n  json: config\n}];"
+      },
+      "id": "validate-input-002",
+      "name": "Validate Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse LinkedIn Company ID from URL\nconst inputData = $input.first().json;\nconst linkedinUrl = inputData.linkedin_company_url;\n\n// Extract company slug/ID from URL\n// Formats supported:\n// - https://www.linkedin.com/company/company-name/\n// - https://linkedin.com/company/12345/\nconst regex = /linkedin\\.com\\/company\\/([^\\/\\?]+)/i;\nconst match = linkedinUrl.match(regex);\n\nif (!match || !match[1]) {\n  throw new Error('Could not extract company ID from LinkedIn URL');\n}\n\nconst companyId = match[1];\n\nreturn [{\n  json: {\n    ...inputData,\n    company_id: companyId,\n    company_slug: companyId\n  }\n}];"
+      },
+      "id": "parse-company-id-003",
+      "name": "Parse Company ID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://nubela.co/proxycurl/api/v2/linkedin/company/employees",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "proxycurlApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "url",
+              "value": "={{ $json.linkedin_company_url }}"
+            },
+            {
+              "name": "page_size",
+              "value": "50"
+            },
+            {
+              "name": "employment_status",
+              "value": "current"
+            },
+            {
+              "name": "resolve_numeric_id",
+              "value": "true"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000,
+          "retry": {
+            "enabled": true,
+            "maxTries": 3,
+            "waitBetweenTries": 2000
+          }
+        }
+      },
+      "id": "fetch-employees-004",
+      "name": "Proxycurl Fetch Employees",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Filter employees by HR-related roles\nconst inputData = $input.first().json;\nconst config = $node[\"Validate Input\"].json;\n\n// HR keywords for role detection\nconst hrKeywords = [\n  \"recruiter\", \"recruiting\", \"talent acquisition\", \"hr manager\",\n  \"human resources\", \"people operations\", \"talent partner\",\n  \"hiring manager\", \"staffing\", \"headhunter\", \"sourcer\",\n  \"people & culture\", \"employee relations\", \"hr business partner\",\n  \"talent management\", \"workforce planning\", \"hr director\",\n  \"chief people officer\", \"vp of people\", \"head of talent\"\n];\n\n// Seniority keywords\nconst seniorityLevels = {\n  executive: [\"vp\", \"vice president\", \"chief\", \"cpo\", \"head of\", \"director\"],\n  senior: [\"senior\", \"sr\", \"lead\", \"principal\"],\n  mid: [\"manager\", \"business partner\"],\n  junior: [\"specialist\", \"coordinator\", \"associate\", \"recruiter\"]\n};\n\n// Function to detect HR role\nfunction isHRRole(title) {\n  if (!title) return false;\n  const lowerTitle = title.toLowerCase();\n  return hrKeywords.some(keyword => lowerTitle.includes(keyword));\n}\n\n// Function to detect seniority\nfunction detectSeniority(title) {\n  if (!title) return \"unknown\";\n  const lowerTitle = title.toLowerCase();\n  \n  for (const [level, keywords] of Object.entries(seniorityLevels)) {\n    if (keywords.some(keyword => lowerTitle.includes(keyword))) {\n      return level;\n    }\n  }\n  return \"entry\";\n}\n\n// Function to calculate priority\nfunction calculatePriority(title, seniority) {\n  let priority = 0;\n  \n  // Seniority bonus\n  const seniorityBonus = {\n    executive: 50,\n    senior: 30,\n    mid: 20,\n    junior: 10,\n    entry: 5\n  };\n  priority += seniorityBonus[seniority] || 0;\n  \n  // High-value title keywords\n  const highValueKeywords = [\"director\", \"vp\", \"head of\", \"talent acquisition\"];\n  if (highValueKeywords.some(kw => title.toLowerCase().includes(kw))) {\n    priority += 20;\n  }\n  \n  return priority;\n}\n\n// Process employees\nconst employees = inputData.employees || [];\nconst filteredEmployees = employees\n  .filter(emp => {\n    const title = emp.title || emp.job_title || \"\";\n    return isHRRole(title);\n  })\n  .map(emp => {\n    const title = emp.title || emp.job_title || \"\";\n    const seniority = detectSeniority(title);\n    const priority = calculatePriority(title, seniority);\n    \n    return {\n      ...emp,\n      is_hr: true,\n      seniority: seniority,\n      priority: priority,\n      hr_relevance_score: priority\n    };\n  })\n  .sort((a, b) => b.priority - a.priority); // Sort by priority descending\n\nreturn filteredEmployees.map(emp => ({ json: emp }));"
+      },
+      "id": "filter-hr-roles-005",
+      "name": "Filter HR Roles",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "batchSize": "={{ $node[\"Validate Input\"].json.batch_size }}",
+        "options": {
+          "reset": false
+        }
+      },
+      "id": "split-batches-006",
+      "name": "Split Into Batches",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [1340, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://nubela.co/proxycurl/api/v2/linkedin/person/profile",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "proxycurlApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "url",
+              "value": "={{ $json.profile_url || $json.linkedin_url }}"
+            },
+            {
+              "name": "fallback_to_cache",
+              "value": "on-error"
+            },
+            {
+              "name": "use_cache",
+              "value": "if-present"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 20000,
+          "retry": {
+            "enabled": true,
+            "maxTries": 3,
+            "waitBetweenTries": 1500
+          }
+        }
+      },
+      "id": "fetch-profile-007",
+      "name": "Proxycurl Fetch Profile",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1560, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract contact hints from Proxycurl profile\nconst profile = $input.first().json;\n\ntry {\n  // Extract basic info\n  const firstName = profile.first_name || \"\";\n  const lastName = profile.last_name || \"\";\n  const fullName = profile.full_name || `${firstName} ${lastName}`.trim();\n  \n  // Extract company domain\n  let companyDomain = \"\";\n  if (profile.experiences && profile.experiences.length > 0) {\n    const currentJob = profile.experiences[0];\n    companyDomain = currentJob.company_linkedin_profile_url\n      ? currentJob.company_linkedin_profile_url.split('/company/')[1]?.split('/')[0]\n      : \"\";\n  }\n  \n  // Extract from company field if available\n  if (!companyDomain && profile.occupation) {\n    const company = profile.occupation.split(' at ')[1];\n    if (company) {\n      // Try to convert company name to domain (basic heuristic)\n      companyDomain = company.toLowerCase()\n        .replace(/[^a-z0-9]/g, '')\n        .replace(/inc|corp|llc|ltd|limited/g, '');\n    }\n  }\n  \n  // Extract profile metadata\n  const linkedinUrl = profile.public_identifier\n    ? `https://www.linkedin.com/in/${profile.public_identifier}`\n    : profile.profile_url || \"\";\n  \n  const title = profile.occupation || profile.headline || \"\";\n  const city = profile.city || \"\";\n  const country = profile.country_full_name || profile.country || \"\";\n  \n  // Calculate profile freshness\n  const lastUpdated = profile.last_updated || null;\n  let daysSinceUpdate = null;\n  if (lastUpdated) {\n    const updateDate = new Date(lastUpdated);\n    const now = new Date();\n    daysSinceUpdate = Math.floor((now - updateDate) / (1000 * 60 * 60 * 24));\n  }\n  \n  // Get company size from current experience\n  let companySize = null;\n  if (profile.experiences && profile.experiences[0]) {\n    companySize = profile.experiences[0].company_size || null;\n  }\n  \n  return [{\n    json: {\n      ...profile,\n      first_name: firstName,\n      last_name: lastName,\n      full_name: fullName,\n      company_domain: companyDomain,\n      linkedin_url: linkedinUrl,\n      title: title,\n      city: city,\n      country: country,\n      days_since_update: daysSinceUpdate,\n      company_size: companySize,\n      seniority: profile.seniority || $json.seniority || \"unknown\",\n      hr_relevance_score: $json.hr_relevance_score || 0\n    }\n  }];\n} catch (error) {\n  console.error('Error extracting contact hints:', error.message);\n  return [{\n    json: {\n      ...profile,\n      error: error.message,\n      first_name: \"\",\n      last_name: \"\",\n      company_domain: \"\",\n      linkedin_url: \"\"\n    }\n  }];\n}"
+      },
+      "id": "extract-hints-008",
+      "name": "Extract Contact Hints",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1780, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://api.hunter.io/v2/email-finder",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "hunterApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "domain",
+              "value": "={{ $json.company_domain }}"
+            },
+            {
+              "name": "first_name",
+              "value": "={{ $json.first_name }}"
+            },
+            {
+              "name": "last_name",
+              "value": "={{ $json.last_name }}"
+            },
+            {
+              "name": "api_key",
+              "value": "={{ $credentials.hunterApi.apiKey }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000,
+          "retry": {
+            "enabled": true,
+            "maxTries": 2,
+            "waitBetweenTries": 1000
+          },
+          "ignoreHttpStatusErrors": true
+        }
+      },
+      "id": "hunter-email-009",
+      "name": "Hunter.io Email Discovery",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2000, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.data?.email || $json.email }}",
+              "operation": "isNotEmpty"
+            }
+          ]
+        }
+      },
+      "id": "email-found-branch-010",
+      "name": "Email Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2220, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://api.neverbounce.com/v4/single/check",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "email",
+              "value": "={{ $json.data?.email || $json.email }}"
+            },
+            {
+              "name": "key",
+              "value": "={{ $credentials.neverbounceApi.apiKey }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 10000,
+          "retry": {
+            "enabled": true,
+            "maxTries": 2,
+            "waitBetweenTries": 1000
+          }
+        }
+      },
+      "id": "neverbounce-verify-011",
+      "name": "NeverBounce Verify Email",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2440, 200]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Generate common email patterns\nconst data = $input.first().json;\nconst firstName = data.first_name || \"\";\nconst lastName = data.last_name || \"\";\nconst domain = data.company_domain || \"\";\n\nif (!firstName || !lastName || !domain) {\n  return [{\n    json: {\n      ...data,\n      generated_emails: [],\n      email_generation_failed: true\n    }\n  }];\n}\n\nconst f = firstName.toLowerCase();\nconst l = lastName.toLowerCase();\nconst fInitial = f.charAt(0);\nconst lInitial = l.charAt(0);\n\n// Ensure domain doesn't have protocol or path\nconst cleanDomain = domain.replace(/^https?:\\/\\//, '').split('/')[0];\n\n// Common email patterns\nconst patterns = [\n  `${f}.${l}@${cleanDomain}`,           // john.doe@company.com\n  `${f}${l}@${cleanDomain}`,            // johndoe@company.com\n  `${fInitial}${l}@${cleanDomain}`,     // jdoe@company.com\n  `${f}@${cleanDomain}`,                // john@company.com\n  `${f}_${l}@${cleanDomain}`,           // john_doe@company.com\n  `${l}.${f}@${cleanDomain}`,           // doe.john@company.com\n  `${fInitial}.${l}@${cleanDomain}`     // j.doe@company.com\n];\n\n// Remove duplicates\nconst uniquePatterns = [...new Set(patterns)];\n\nreturn [{\n  json: {\n    ...data,\n    generated_emails: uniquePatterns,\n    email_generation_method: \"pattern_based\"\n  }\n}];"
+      },
+      "id": "generate-email-patterns-012",
+      "name": "Generate Email Patterns",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2440, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Verify generated emails in bulk and select best\nconst data = $input.first().json;\nconst generatedEmails = data.generated_emails || [];\n\nif (generatedEmails.length === 0) {\n  return [{\n    json: {\n      ...data,\n      email: null,\n      email_verified: false,\n      email_confidence: 0\n    }\n  }];\n}\n\n// For now, return first pattern for verification\n// In production, you'd call NeverBounce bulk API\nreturn [{\n  json: {\n    ...data,\n    email: generatedEmails[0],\n    email_source: \"generated\",\n    email_candidates: generatedEmails\n  }\n}];"
+      },
+      "id": "select-best-email-013",
+      "name": "Select Best Generated Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2660, 400]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://api.neverbounce.com/v4/single/check",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "email",
+              "value": "={{ $json.email }}"
+            },
+            {
+              "name": "key",
+              "value": "={{ $credentials.neverbounceApi.apiKey }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 10000,
+          "ignoreHttpStatusErrors": true
+        }
+      },
+      "id": "verify-generated-014",
+      "name": "Verify Generated Email",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2880, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.apollo.io/v1/people/match",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "apolloApi",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "first_name",
+              "value": "={{ $json.first_name }}"
+            },
+            {
+              "name": "last_name",
+              "value": "={{ $json.last_name }}"
+            },
+            {
+              "name": "domain",
+              "value": "={{ $json.company_domain }}"
+            },
+            {
+              "name": "linkedin_url",
+              "value": "={{ $json.linkedin_url }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000,
+          "ignoreHttpStatusErrors": true
+        }
+      },
+      "id": "apollo-enrich-015",
+      "name": "Apollo.io Enrichment",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3100, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Calculate contact quality score (0-100)\nconst data = $input.first().json;\n\nlet score = 0;\n\n// 1. Email verification status (max 30 pts)\nconst emailResult = data.result || data.email_verification_result || \"unknown\";\nif (emailResult === \"valid\") {\n  score += 30;\n} else if (emailResult === \"catchall\") {\n  score += 15;\n} else if (emailResult === \"unknown\" && data.email) {\n  score += 10;\n}\n\n// 2. Phone number present (max 20 pts)\nconst phone = data.phone_numbers?.[0] || data.mobile_phone || data.phone || null;\nif (phone && phone.length > 5) {\n  score += 20;\n}\n\n// 3. LinkedIn URL present (max 10 pts)\nif (data.linkedin_url && data.linkedin_url.includes('linkedin.com')) {\n  score += 10;\n}\n\n// 4. Company size (max 10 pts)\nconst companySize = data.company_size || \"\";\nif (companySize.includes('100') || companySize.includes('500') || companySize.includes('1000')) {\n  score += 10;\n} else if (companySize.includes('50')) {\n  score += 7;\n} else if (companySize.includes('10')) {\n  score += 5;\n}\n\n// 5. Seniority level (max 15 pts)\nconst seniority = data.seniority || \"unknown\";\nif (seniority === \"executive\") {\n  score += 15;\n} else if (seniority === \"senior\") {\n  score += 12;\n} else if (seniority === \"mid\") {\n  score += 10;\n} else if (seniority === \"junior\") {\n  score += 7;\n}\n\n// 6. HR relevance (max 10 pts)\nconst hrRelevance = data.hr_relevance_score || 0;\nif (hrRelevance >= 50) {\n  score += 10;\n} else if (hrRelevance >= 30) {\n  score += 7;\n} else if (hrRelevance >= 20) {\n  score += 5;\n}\n\n// 7. Profile freshness (max 5 pts)\nconst daysSinceUpdate = data.days_since_update;\nif (daysSinceUpdate !== null) {\n  if (daysSinceUpdate <= 30) {\n    score += 5;\n  } else if (daysSinceUpdate <= 90) {\n    score += 3;\n  } else if (daysSinceUpdate <= 180) {\n    score += 1;\n  }\n}\n\n// Determine tier\nconst hotThreshold = $node[\"Validate Input\"].json.hot_threshold || 80;\nconst warmThreshold = $node[\"Validate Input\"].json.warm_threshold || 60;\n\nlet tier = \"discard\";\nif (score >= hotThreshold) {\n  tier = \"hot\";\n} else if (score >= warmThreshold) {\n  tier = \"warm\";\n}\n\nreturn [{\n  json: {\n    ...data,\n    quality_score: Math.round(score),\n    tier: tier,\n    score_breakdown: {\n      email_verification: emailResult === \"valid\" ? 30 : (emailResult === \"catchall\" ? 15 : 10),\n      phone_present: phone ? 20 : 0,\n      linkedin_present: data.linkedin_url ? 10 : 0,\n      company_size_score: companySize ? 10 : 0,\n      seniority_score: seniority === \"executive\" ? 15 : 0,\n      hr_relevance: hrRelevance >= 50 ? 10 : 0,\n      profile_freshness: daysSinceUpdate <= 30 ? 5 : 0\n    },\n    scoring_timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "calculate-score-016",
+      "name": "Calculate Quality Score",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3320, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{ $json.quality_score }}",
+              "operation": "larger",
+              "value2": "={{ $node[\"Validate Input\"].json.hot_threshold }}"
+            }
+          ]
+        }
+      },
+      "id": "hot-leads-branch-017",
+      "name": "Hot Lead?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [3540, 300]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.GOOGLE_SHEETS_HOT_LEADS_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Hot Leads",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Name": "={{ $json.full_name }}",
+            "Title": "={{ $json.title }}",
+            "Company": "={{ $json.company_domain }}",
+            "Email": "={{ $json.email }}",
+            "Phone": "={{ $json.phone_numbers?.[0] || $json.mobile_phone || '' }}",
+            "LinkedIn": "={{ $json.linkedin_url }}",
+            "Quality Score": "={{ $json.quality_score }}",
+            "Seniority": "={{ $json.seniority }}",
+            "HR Role": "={{ $json.is_hr ? 'Yes' : 'No' }}",
+            "Timestamp": "={{ $json.scoring_timestamp }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "save-hot-leads-018",
+      "name": "Save to Hot Leads Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [3760, 180],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "google-sheets-oauth",
+          "name": "Google Sheets OAuth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{ $json.quality_score }}",
+              "operation": "largerEqual",
+              "value2": "={{ $node[\"Validate Input\"].json.warm_threshold }}"
+            },
+            {
+              "value1": "={{ $json.quality_score }}",
+              "operation": "smallerEqual",
+              "value2": "={{ $node[\"Validate Input\"].json.hot_threshold }}"
+            }
+          ]
+        }
+      },
+      "id": "warm-leads-branch-019",
+      "name": "Warm/Cold Lead?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [3760, 420]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.GOOGLE_SHEETS_WARM_COLD_LEADS_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Warm Cold Leads",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Name": "={{ $json.full_name }}",
+            "Title": "={{ $json.title }}",
+            "Company": "={{ $json.company_domain }}",
+            "Email": "={{ $json.email }}",
+            "Phone": "={{ $json.phone_numbers?.[0] || $json.mobile_phone || '' }}",
+            "LinkedIn": "={{ $json.linkedin_url }}",
+            "Quality Score": "={{ $json.quality_score }}",
+            "Tier": "={{ $json.tier }}",
+            "Notes": "Email source: {{ $json.email_source || 'hunter' }}",
+            "Timestamp": "={{ $json.scoring_timestamp }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "save-warm-cold-020",
+      "name": "Save to Warm/Cold Leads Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [3980, 420],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "google-sheets-oauth",
+          "name": "Google Sheets OAuth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Aggregate all results from batch processing\nconst allResults = $input.all();\n\nconst hotLeads = allResults.filter(r => r.json.tier === \"hot\");\nconst warmLeads = allResults.filter(r => r.json.tier === \"warm\");\nconst discarded = allResults.filter(r => r.json.tier === \"discard\");\n\nconst config = $node[\"Validate Input\"].json;\nconst startTime = new Date(config.start_time);\nconst endTime = new Date();\nconst executionTimeSeconds = Math.round((endTime - startTime) / 1000);\n\nreturn [{\n  json: {\n    request_id: config.request_id,\n    company_url: config.linkedin_company_url,\n    total_processed: allResults.length,\n    hot_count: hotLeads.length,\n    warm_count: warmLeads.length,\n    cold_count: 0, // Could separate warm/cold if needed\n    discarded_count: discarded.length,\n    execution_time_seconds: executionTimeSeconds,\n    timestamp: new Date().toISOString(),\n    hot_leads: hotLeads.slice(0, 5).map(l => l.json.full_name), // Top 5 hot leads\n    status: \"success\"\n  }\n}];"
+      },
+      "id": "aggregate-results-021",
+      "name": "Aggregate Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [4200, 300]
+    },
+    {
+      "parameters": {
+        "authentication": "webhook",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "C12345678",
+          "mode": "id"
+        },
+        "text": "=✅ *LinkedIn HR Discovery Complete*\\n\\n*Company:* {{ $json.company_url }}\\n*Total Leads:* {{ $json.total_processed }}\\n\\n🔥 *Hot Leads:* {{ $json.hot_count }}\\n⚡ *Warm Leads:* {{ $json.warm_count }}\\n❄️ *Cold Leads:* {{ $json.cold_count }}\\n🗑️ *Discarded:* {{ $json.discarded_count }}\\n\\n⏱️ *Execution Time:* {{ $json.execution_time_seconds }}s\\n📋 *Request ID:* {{ $json.request_id }}",
+        "otherOptions": {}
+      },
+      "id": "slack-notification-022",
+      "name": "Slack Notification",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [4420, 200],
+      "credentials": {
+        "slackWebhookApi": {
+          "id": "slack-webhook",
+          "name": "Slack Webhook"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.GOOGLE_SHEETS_ACTIVITY_LOG_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Activity Log",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Request ID": "={{ $json.request_id }}",
+            "Timestamp": "={{ $json.timestamp }}",
+            "Workflow": "LinkedIn HR Discovery",
+            "Status": "={{ $json.status }}",
+            "Company URL": "={{ $json.company_url }}",
+            "Total Leads": "={{ $json.total_processed }}",
+            "Hot": "={{ $json.hot_count }}",
+            "Warm": "={{ $json.warm_count }}",
+            "Cold": "={{ $json.cold_count }}",
+            "Discarded": "={{ $json.discarded_count }}",
+            "Execution Time": "={{ $json.execution_time_seconds }}s",
+            "Errors": ""
+          }
+        },
+        "options": {}
+      },
+      "id": "activity-log-023",
+      "name": "Log to Activity Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [4420, 300],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "google-sheets-oauth",
+          "name": "Google Sheets OAuth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json, null, 2) }}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "id": "response-024",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [4640, 300]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Validate Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Input": {
+      "main": [
+        [
+          {
+            "node": "Parse Company ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Company ID": {
+      "main": [
+        [
+          {
+            "node": "Proxycurl Fetch Employees",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Proxycurl Fetch Employees": {
+      "main": [
+        [
+          {
+            "node": "Filter HR Roles",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter HR Roles": {
+      "main": [
+        [
+          {
+            "node": "Split Into Batches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Into Batches": {
+      "main": [
+        [
+          {
+            "node": "Proxycurl Fetch Profile",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Proxycurl Fetch Profile": {
+      "main": [
+        [
+          {
+            "node": "Extract Contact Hints",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Contact Hints": {
+      "main": [
+        [
+          {
+            "node": "Hunter.io Email Discovery",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Hunter.io Email Discovery": {
+      "main": [
+        [
+          {
+            "node": "Email Found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email Found?": {
+      "main": [
+        [
+          {
+            "node": "NeverBounce Verify Email",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Generate Email Patterns",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "NeverBounce Verify Email": {
+      "main": [
+        [
+          {
+            "node": "Apollo.io Enrichment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Email Patterns": {
+      "main": [
+        [
+          {
+            "node": "Select Best Generated Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Select Best Generated Email": {
+      "main": [
+        [
+          {
+            "node": "Verify Generated Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Generated Email": {
+      "main": [
+        [
+          {
+            "node": "Apollo.io Enrichment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Apollo.io Enrichment": {
+      "main": [
+        [
+          {
+            "node": "Calculate Quality Score",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Quality Score": {
+      "main": [
+        [
+          {
+            "node": "Hot Lead?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Hot Lead?": {
+      "main": [
+        [
+          {
+            "node": "Save to Hot Leads Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Warm/Cold Lead?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save to Hot Leads Sheet": {
+      "main": [
+        [
+          {
+            "node": "Split Into Batches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Warm/Cold Lead?": {
+      "main": [
+        [
+          {
+            "node": "Save to Warm/Cold Leads Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Split Into Batches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save to Warm/Cold Leads Sheet": {
+      "main": [
+        [
+          {
+            "node": "Split Into Batches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Results": {
+      "main": [
+        [
+          {
+            "node": "Slack Notification",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Log to Activity Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack Notification": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log to Activity Sheet": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 1,
+  "updatedAt": "2025-11-18T00:00:00.000Z",
+  "versionId": "v1"
+}
