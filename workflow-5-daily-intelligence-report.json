@@ -1,0 +1,647 @@
+{
+  "name": "Automated Daily Recruitment Intelligence Report",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * *"
+            }
+          ]
+        }
+      },
+      "id": "cron-trigger",
+      "name": "Cron Trigger (8 AM Daily)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Set search parameters\nconst today = new Date();\nconst yesterday = new Date(today);\nyesterday.setDate(yesterday.getDate() - 1);\n\nreturn [{\n  json: {\n    search_params: {\n      locations: ['United States', 'Remote'],\n      roles: ['Software Engineer', 'Data Scientist', 'Product Manager', 'Recruiter', 'HR Manager'],\n      date_posted: 'last-24-hours',\n      posted_after: yesterday.toISOString().split('T')[0],\n      posted_before: today.toISOString().split('T')[0]\n    },\n    execution_date: today.toISOString(),\n    report_date: today.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })\n  }\n}];"
+      },
+      "id": "set-search-params",
+      "name": "Set Search Parameters",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 400]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://api.indeed.com/ads/apisearch",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "publisher",
+              "value": "={{ $credentials.indeedApiKey }}"
+            },
+            {
+              "name": "q",
+              "value": "recruiter OR software engineer OR data scientist"
+            },
+            {
+              "name": "l",
+              "value": "United States"
+            },
+            {
+              "name": "fromage",
+              "value": "1"
+            },
+            {
+              "name": "limit",
+              "value": "100"
+            },
+            {
+              "name": "format",
+              "value": "json"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 20000
+        }
+      },
+      "id": "scrape-indeed",
+      "name": "Scrape Indeed Jobs",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [680, 300],
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "indeed-api-cred",
+          "name": "Indeed API"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://linkedin-jobs-search.p.rapidapi.com/",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "keywords",
+              "value": "recruiter,software engineer,data scientist"
+            },
+            {
+              "name": "location",
+              "value": "United States"
+            },
+            {
+              "name": "datePosted",
+              "value": "past24Hours"
+            },
+            {
+              "name": "page",
+              "value": "1"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-RapidAPI-Key",
+              "value": "={{ $credentials.rapidApiKey }}"
+            },
+            {
+              "name": "X-RapidAPI-Host",
+              "value": "linkedin-jobs-search.p.rapidapi.com"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 20000
+        }
+      },
+      "id": "scrape-linkedin",
+      "name": "Scrape LinkedIn Jobs",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [680, 400],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "rapidapi-cred",
+          "name": "RapidAPI"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://api.ziprecruiter.com/jobs/v1",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "api_key",
+              "value": "={{ $credentials.ziprecruiterApiKey }}"
+            },
+            {
+              "name": "search",
+              "value": "recruiter software engineer data scientist"
+            },
+            {
+              "name": "location",
+              "value": "USA"
+            },
+            {
+              "name": "days_ago",
+              "value": "1"
+            },
+            {
+              "name": "jobs_per_page",
+              "value": "100"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 20000
+        }
+      },
+      "id": "scrape-ziprecruiter",
+      "name": "Scrape ZipRecruiter Jobs",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [680, 500],
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "ziprecruiter-api-cred",
+          "name": "ZipRecruiter API"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combinationMode": "mergeByPosition"
+      },
+      "id": "merge-job-data",
+      "name": "Merge All Job Sources",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [900, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse and normalize job data from all sources\nconst allItems = $input.all();\nconst normalizedJobs = [];\n\nfor (const item of allItems) {\n  try {\n    // Indeed format\n    if (item.json.results) {\n      item.json.results.forEach(job => {\n        normalizedJobs.push({\n          source: 'Indeed',\n          company_name: job.company,\n          title: job.jobtitle,\n          location: job.formattedLocation,\n          url: job.url,\n          posted_date: job.date,\n          description_snippet: job.snippet\n        });\n      });\n    }\n    \n    // LinkedIn format\n    if (item.json.data) {\n      item.json.data.forEach(job => {\n        normalizedJobs.push({\n          source: 'LinkedIn',\n          company_name: job.company,\n          title: job.title,\n          location: job.location,\n          url: job.link,\n          posted_date: job.postedTime,\n          description_snippet: job.description\n        });\n      });\n    }\n    \n    // ZipRecruiter format\n    if (item.json.jobs) {\n      item.json.jobs.forEach(job => {\n        normalizedJobs.push({\n          source: 'ZipRecruiter',\n          company_name: job.hiring_company?.name || 'Unknown',\n          title: job.name,\n          location: job.location,\n          url: job.url,\n          posted_date: job.posted_time,\n          description_snippet: job.snippet\n        });\n      });\n    }\n  } catch (error) {\n    console.error('Error parsing job source:', error.message);\n  }\n}\n\nreturn normalizedJobs.map(job => ({ json: job }));"
+      },
+      "id": "normalize-job-data",
+      "name": "Normalize Job Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 400]
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "documentId": {
+          "__rl": true,
+          "value": "job-archive-sheet-id",
+          "mode": "list"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Yesterday Jobs",
+          "mode": "list"
+        },
+        "options": {}
+      },
+      "id": "load-yesterday-data",
+      "name": "Load Yesterday's Jobs",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [1340, 400],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "google-sheets-cred",
+          "name": "Google Sheets"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Compare to yesterday and identify truly new postings\nconst todayJobs = $('Normalize Job Data').all().map(item => item.json);\nconst yesterdayJobs = $input.all().map(item => item.json);\n\n// Create set of yesterday job identifiers\nconst yesterdayIds = new Set(\n  yesterdayJobs.map(j => `${j.company_name}|${j.title}|${j.location}`)\n);\n\n// Filter for new jobs not in yesterday's data\nconst newJobs = todayJobs.filter(job => {\n  const jobId = `${job.company_name}|${job.title}|${job.location}`;\n  return !yesterdayIds.has(jobId);\n});\n\nreturn [{\n  json: {\n    total_jobs_today: todayJobs.length,\n    new_jobs: newJobs,\n    new_jobs_count: newJobs.length\n  }\n}];"
+      },
+      "id": "identify-new-jobs",
+      "name": "Identify New Postings",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1560, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Group jobs by company and calculate urgency scores\nconst newJobs = $input.first().json.new_jobs;\n\nconst jobsByCompany = {};\nnewJobs.forEach(job => {\n  const company = job.company_name;\n  if (!jobsByCompany[company]) {\n    jobsByCompany[company] = [];\n  }\n  jobsByCompany[company].push(job);\n});\n\n// Calculate urgency score\nfunction calculateUrgencyScore(jobs) {\n  let score = jobs.length * 10;\n  \n  const seniorCount = jobs.filter(j => \n    /senior|lead|principal|director|vp|chief/i.test(j.title)\n  ).length;\n  score += seniorCount * 5;\n  \n  const techCount = jobs.filter(j =>\n    /engineer|developer|architect|devops|scientist/i.test(j.title)\n  ).length;\n  score += techCount * 3;\n  \n  return score;\n}\n\n// Identify hot companies (5+ jobs)\nconst hotCompanies = Object.entries(jobsByCompany)\n  .filter(([company, jobs]) => jobs.length >= 5)\n  .map(([company, jobs]) => ({\n    company_name: company,\n    job_count: jobs.length,\n    roles: jobs.map(j => j.title),\n    locations: [...new Set(jobs.map(j => j.location))],\n    urgency_score: calculateUrgencyScore(jobs),\n    posted_date: jobs[0].posted_date\n  }))\n  .sort((a, b) => b.urgency_score - a.urgency_score);\n\nreturn hotCompanies.map(company => ({ json: company }));"
+      },
+      "id": "flag-hot-companies",
+      "name": "Flag Hot Companies (5+ Jobs)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1780, 400]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://company.clearbit.com/v2/companies/find?domain={{ $json.company_name.toLowerCase().replace(/\\s+/g, '').replace(/inc\\.?|llc\\.?|ltd\\.?/gi, '') }}.com",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $credentials.clearbitApiKey }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "enrich-companies",
+      "name": "Enrich Companies (Clearbit)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2000, 400],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "clearbit-api-cred",
+          "name": "Clearbit API"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://api.apollo.io/v1/mixed_people/search",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "organization_names[]",
+              "value": "={{ $json.company_name }}"
+            },
+            {
+              "name": "person_titles[]",
+              "value": "recruiter,talent acquisition,hr manager,people ops"
+            },
+            {
+              "name": "page",
+              "value": "1"
+            },
+            {
+              "name": "per_page",
+              "value": "5"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Api-Key",
+              "value": "={{ $credentials.apolloApiKey }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "find-hr-contacts",
+      "name": "Find HR Contacts (Apollo.io)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2220, 400],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "apollo-api-cred",
+          "name": "Apollo.io API"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Prepare market analysis data for GPT-4\nconst newJobs = $('Identify New Postings').first().json.new_jobs;\nconst hotCompanies = $('Flag Hot Companies (5+ Jobs)').all().map(item => item.json);\n\n// Calculate top industries\nconst industries = {};\nnewJobs.forEach(job => {\n  const title = job.title.toLowerCase();\n  let industry = 'Other';\n  \n  if (/engineer|developer|software|tech/i.test(title)) industry = 'Technology';\n  else if (/data|analyst|scientist/i.test(title)) industry = 'Data & Analytics';\n  else if (/recruit|talent|hr|people/i.test(title)) industry = 'Human Resources';\n  else if (/sales|account|business development/i.test(title)) industry = 'Sales';\n  else if (/marketing|content|social/i.test(title)) industry = 'Marketing';\n  \n  industries[industry] = (industries[industry] || 0) + 1;\n});\n\nconst topIndustries = Object.entries(industries)\n  .sort((a, b) => b[1] - a[1])\n  .slice(0, 5)\n  .map(([industry, count]) => `${industry} (${count})`);\n\n// Calculate top locations\nconst locations = {};\nnewJobs.forEach(job => {\n  const loc = job.location || 'Remote';\n  locations[loc] = (locations[loc] || 0) + 1;\n});\n\nconst topLocations = Object.entries(locations)\n  .sort((a, b) => b[1] - a[1])\n  .slice(0, 5)\n  .map(([loc, count]) => `${loc} (${count})`);\n\nreturn [{\n  json: {\n    total_jobs: newJobs.length,\n    hot_companies_count: hotCompanies.length,\n    top_industries: topIndustries,\n    top_locations: topLocations,\n    hot_company_names: hotCompanies.slice(0, 10).map(c => c.company_name)\n  }\n}];"
+      },
+      "id": "prepare-analysis-data",
+      "name": "Prepare Market Analysis Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2440, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $credentials.openaiApiKey }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  model: 'gpt-4o',\n  temperature: 0.7,\n  max_tokens: 500,\n  messages: [{\n    role: 'user',\n    content: `Analyze these recruitment market trends from today's job board data:\\n\\nTotal New Jobs: ${$json.total_jobs}\\nTop Industries: ${$json.top_industries.join(', ')}\\nTop Locations: ${$json.top_locations.join(', ')}\\nHot Companies (5+ jobs): ${$json.hot_company_names.join(', ')}\\n\\nPlease provide:\\n1. Key Trends: What industries/roles are heating up?\\n2. Market Insights: What does this hiring activity indicate?\\n3. Recommended Focus Areas: Where should our recruitment efforts focus?\\n4. Unusual Patterns: Any surprising or noteworthy hiring patterns?\\n\\nKeep analysis concise (250-300 words), actionable, and business-focused.`\n  }]\n}) }}",
+        "options": {
+          "timeout": 20000
+        }
+      },
+      "id": "generate-ai-insights",
+      "name": "Generate AI Insights (GPT-4)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2660, 400],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "openai-api-cred",
+          "name": "OpenAI API"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Format data for PDF report\nconst analysisData = $('Prepare Market Analysis Data').first().json;\nconst aiInsights = $input.first().json.choices?.[0]?.message?.content || 'AI insights unavailable - please review raw data.';\nconst hotCompanies = $('Find HR Contacts (Apollo.io)').all();\n\n// Calculate role breakdown\nconst newJobs = $('Identify New Postings').first().json.new_jobs;\nconst roleBreakdown = {};\nnewJobs.forEach(job => {\n  const title = job.title;\n  roleBreakdown[title] = (roleBreakdown[title] || 0) + 1;\n});\n\nconst topRoles = Object.entries(roleBreakdown)\n  .sort((a, b) => b[1] - a[1])\n  .slice(0, 10)\n  .map(([role, count]) => ({ role, count }));\n\n// Format hot companies with HR contacts\nconst companiesWithContacts = hotCompanies.map(item => {\n  const company = item.json;\n  const hrContact = company.people?.[0] || {};\n  \n  return {\n    company_name: company.company_name,\n    job_count: company.job_count,\n    urgency_score: company.urgency_score,\n    roles: company.roles.slice(0, 5).join(', '),\n    hr_contact_name: hrContact.name || 'Not found',\n    hr_contact_email: hrContact.email || 'Not found',\n    hr_contact_title: hrContact.title || ''\n  };\n});\n\nreturn [{\n  json: {\n    report_date: $('Set Search Parameters').first().json.report_date,\n    total_jobs: analysisData.total_jobs,\n    hot_companies_count: hotCompanies.length,\n    hr_contacts_found: companiesWithContacts.filter(c => c.hr_contact_email !== 'Not found').length,\n    ai_insights: aiInsights,\n    companies: companiesWithContacts,\n    role_breakdown: topRoles,\n    top_industries: analysisData.top_industries,\n    top_locations: analysisData.top_locations\n  }\n}];"
+      },
+      "id": "format-report-data",
+      "name": "Format Report Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2880, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://docraptor.com/docs",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpBasicAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  test: false,\n  document_type: 'pdf',\n  document_content: `<!DOCTYPE html>\n<html>\n<head>\n  <style>\n    body { font-family: Arial, sans-serif; margin: 40px; }\n    h1 { color: #2c3e50; border-bottom: 3px solid #3498db; padding-bottom: 10px; }\n    .metric { display: inline-block; margin: 20px; padding: 20px; background: #ecf0f1; border-radius: 8px; text-align: center; }\n    .metric h2 { margin: 0; color: #3498db; font-size: 36px; }\n    .metric p { margin: 5px 0 0 0; color: #7f8c8d; }\n    .company-card { border-left: 4px solid #e74c3c; padding: 15px; margin: 15px 0; background: #fafafa; }\n    .insights { background: #d5f4e6; padding: 20px; border-radius: 8px; margin: 20px 0; white-space: pre-wrap; }\n    table { width: 100%; border-collapse: collapse; margin: 20px 0; }\n    th, td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }\n    th { background: #3498db; color: white; }\n  </style>\n</head>\n<body>\n  <h1>Daily Recruitment Intelligence Report</h1>\n  <p><strong>Date:</strong> ${$json.report_date}</p>\n  \n  <div class=\"metrics\">\n    <div class=\"metric\"><h2>${$json.total_jobs}</h2><p>Total New Jobs</p></div>\n    <div class=\"metric\"><h2>${$json.hot_companies_count}</h2><p>Hot Companies</p></div>\n    <div class=\"metric\"><h2>${$json.hr_contacts_found}</h2><p>HR Contacts Found</p></div>\n  </div>\n  \n  <h2>AI Market Insights</h2>\n  <div class=\"insights\">${$json.ai_insights}</div>\n  \n  <h2>Hot Companies (5+ New Jobs)</h2>\n  ${$json.companies.slice(0, 10).map(c => `\n    <div class=\"company-card\">\n      <h3>${c.company_name} (${c.job_count} jobs)</h3>\n      <p><strong>Urgency Score:</strong> ${c.urgency_score}</p>\n      <p><strong>Roles:</strong> ${c.roles}</p>\n      <p><strong>HR Contact:</strong> ${c.hr_contact_name} - ${c.hr_contact_email}</p>\n    </div>\n  `).join('')}\n  \n  <h2>Top 10 Roles</h2>\n  <table>\n    <tr><th>Role</th><th>Count</th></tr>\n    ${$json.role_breakdown.map(r => `<tr><td>${r.role}</td><td>${r.count}</td></tr>`).join('')}\n  </table>\n</body>\n</html>`\n}) }}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        }
+      },
+      "id": "generate-pdf",
+      "name": "Generate PDF Report",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3100, 400],
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "docraptor-api-cred",
+          "name": "DocRaptor API"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "upload",
+        "folderId": {
+          "__rl": true,
+          "value": "recruitment-reports-folder-id",
+          "mode": "list"
+        },
+        "options": {
+          "fileName": "=recruitment-intelligence-{{ new Date().toISOString().split('T')[0] }}.pdf"
+        }
+      },
+      "id": "save-to-drive",
+      "name": "Save to Google Drive",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [3320, 400],
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "google-drive-cred",
+          "name": "Google Drive"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "bhushan@ibovi.com",
+        "subject": "=Daily Recruitment Intelligence: {{ $('Format Report Data').first().json.total_jobs }} New Jobs - {{ new Date().toLocaleDateString() }}",
+        "message": "=Hi Bhushan,\\n\\nYour daily recruitment intelligence report is attached.\\n\\nQuick Summary:\\n- {{ $('Format Report Data').first().json.total_jobs }} new jobs posted yesterday\\n- {{ $('Format Report Data').first().json.hot_companies_count }} companies hiring aggressively (5+ roles)\\n- {{ $('Format Report Data').first().json.hr_contacts_found }} HR decision-makers identified\\n\\nTop 3 Hot Companies:\\n{{ $('Format Report Data').first().json.companies.slice(0, 3).map((c, i) => `${i+1}. ${c.company_name} (${c.job_count} jobs)`).join('\\n') }}\\n\\nBest regards,\\nn8n Automation",
+        "options": {
+          "ccList": "team@ibovi.com",
+          "attachmentsUi": {
+            "attachmentsBinary": [
+              {
+                "property": "data"
+              }
+            ]
+          }
+        }
+      },
+      "id": "email-report",
+      "name": "Email Report to Bhushan",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [3540, 400],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "gmail-oauth-cred",
+          "name": "Gmail"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  text: `📊 Daily Recruitment Intelligence Report\\n\\n✅ ${$('Format Report Data').first().json.total_jobs} new jobs found\\n🔥 ${$('Format Report Data').first().json.hot_companies_count} hot companies identified\\n👥 ${$('Format Report Data').first().json.hr_contacts_found} HR contacts discovered\\n\\nTop Industries: ${$('Format Report Data').first().json.top_industries.slice(0, 3).join(', ')}\\n\\nReport emailed to bhushan@ibovi.com`\n}) }}",
+        "options": {}
+      },
+      "id": "post-to-slack",
+      "name": "Post Summary to Slack",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3760, 400],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "dashboard-metrics-sheet-id",
+          "mode": "list"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Daily Metrics",
+          "mode": "list"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "date": "={{ new Date().toISOString().split('T')[0] }}",
+            "total_jobs": "={{ $('Format Report Data').first().json.total_jobs }}",
+            "hot_companies": "={{ $('Format Report Data').first().json.hot_companies_count }}",
+            "hr_contacts": "={{ $('Format Report Data').first().json.hr_contacts_found }}",
+            "top_industry": "={{ $('Format Report Data').first().json.top_industries[0] }}",
+            "report_generated": "yes"
+          }
+        },
+        "options": {}
+      },
+      "id": "update-dashboard",
+      "name": "Update Dashboard Metrics",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [3980, 400],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "google-sheets-cred",
+          "name": "Google Sheets"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "activity-log-sheet-id",
+          "mode": "list"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Activity Log",
+          "mode": "list"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "timestamp": "={{ new Date().toISOString() }}",
+            "workflow_name": "Daily Intelligence Report",
+            "total_jobs": "={{ $('Format Report Data').first().json.total_jobs }}",
+            "hot_companies": "={{ $('Format Report Data').first().json.hot_companies_count }}",
+            "pdf_generated": "yes",
+            "email_sent": "yes",
+            "status": "success"
+          }
+        },
+        "options": {}
+      },
+      "id": "log-execution",
+      "name": "Log Execution",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [4200, 400],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "google-sheets-cred",
+          "name": "Google Sheets"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Cron Trigger (8 AM Daily)": {
+      "main": [[{"node": "Set Search Parameters", "type": "main", "index": 0}]]
+    },
+    "Set Search Parameters": {
+      "main": [[
+        {"node": "Scrape Indeed Jobs", "type": "main", "index": 0},
+        {"node": "Scrape LinkedIn Jobs", "type": "main", "index": 0},
+        {"node": "Scrape ZipRecruiter Jobs", "type": "main", "index": 0}
+      ]]
+    },
+    "Scrape Indeed Jobs": {
+      "main": [[{"node": "Merge All Job Sources", "type": "main", "index": 0}]]
+    },
+    "Scrape LinkedIn Jobs": {
+      "main": [[{"node": "Merge All Job Sources", "type": "main", "index": 1}]]
+    },
+    "Scrape ZipRecruiter Jobs": {
+      "main": [[{"node": "Merge All Job Sources", "type": "main", "index": 2}]]
+    },
+    "Merge All Job Sources": {
+      "main": [[{"node": "Normalize Job Data", "type": "main", "index": 0}]]
+    },
+    "Normalize Job Data": {
+      "main": [[{"node": "Load Yesterday's Jobs", "type": "main", "index": 0}]]
+    },
+    "Load Yesterday's Jobs": {
+      "main": [[{"node": "Identify New Postings", "type": "main", "index": 0}]]
+    },
+    "Identify New Postings": {
+      "main": [[{"node": "Flag Hot Companies (5+ Jobs)", "type": "main", "index": 0}]]
+    },
+    "Flag Hot Companies (5+ Jobs)": {
+      "main": [[{"node": "Enrich Companies (Clearbit)", "type": "main", "index": 0}]]
+    },
+    "Enrich Companies (Clearbit)": {
+      "main": [[{"node": "Find HR Contacts (Apollo.io)", "type": "main", "index": 0}]]
+    },
+    "Find HR Contacts (Apollo.io)": {
+      "main": [[{"node": "Prepare Market Analysis Data", "type": "main", "index": 0}]]
+    },
+    "Prepare Market Analysis Data": {
+      "main": [[{"node": "Generate AI Insights (GPT-4)", "type": "main", "index": 0}]]
+    },
+    "Generate AI Insights (GPT-4)": {
+      "main": [[{"node": "Format Report Data", "type": "main", "index": 0}]]
+    },
+    "Format Report Data": {
+      "main": [[{"node": "Generate PDF Report", "type": "main", "index": 0}]]
+    },
+    "Generate PDF Report": {
+      "main": [[{"node": "Save to Google Drive", "type": "main", "index": 0}]]
+    },
+    "Save to Google Drive": {
+      "main": [[{"node": "Email Report to Bhushan", "type": "main", "index": 0}]]
+    },
+    "Email Report to Bhushan": {
+      "main": [[{"node": "Post Summary to Slack", "type": "main", "index": 0}]]
+    },
+    "Post Summary to Slack": {
+      "main": [[{"node": "Update Dashboard Metrics", "type": "main", "index": 0}]]
+    },
+    "Update Dashboard Metrics": {
+      "main": [[{"node": "Log Execution", "type": "main", "index": 0}]]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/New_York"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 1,
+  "updatedAt": "2024-01-15T00:00:00.000Z",
+  "versionId": "1"
+}

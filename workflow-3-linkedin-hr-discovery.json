@@ -1,0 +1,580 @@
+{
+  "name": "LinkedIn Company to HR Contact Discovery Chain",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "linkedin-hr-discovery",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Input Validation\nconst inputData = $input.first().json;\nconst requestData = inputData.body || inputData;\n\n// Validate LinkedIn company URL\nif (!requestData.company_url) {\n  throw new Error('company_url is required');\n}\n\nconst linkedinRegex = /^https?:\\/\\/(www\\.)?linkedin\\.com\\/company\\/[a-zA-Z0-9-]+\\/?$/;\nif (!linkedinRegex.test(requestData.company_url)) {\n  throw new Error('Invalid LinkedIn company URL format. Expected: https://www.linkedin.com/company/{slug}/');\n}\n\n// Default filters\nconst jobTitleFilter = requestData.job_title_filter || 'HR|Recruiter|Talent|People Ops';\nconst maxResults = Math.min(requestData.max_results || 50, 100); // Cap at 100\n\nreturn [{\n  json: {\n    company_url: requestData.company_url.trim(),\n    job_title_filter: jobTitleFilter,\n    max_results: maxResults,\n    timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "input-validation",
+      "name": "Input Validation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract LinkedIn Company ID from URL\nconst companyUrl = $input.first().json.company_url;\nconst match = companyUrl.match(/\\/company\\/([a-zA-Z0-9-]+)/);\n\nif (!match || !match[1]) {\n  throw new Error('Could not extract company ID from LinkedIn URL');\n}\n\nconst companySlug = match[1];\n\nreturn [{\n  json: {\n    company_url: companyUrl,\n    company_slug: companySlug,\n    job_title_filter: $input.first().json.job_title_filter,\n    max_results: $input.first().json.max_results\n  }\n}];"
+      },
+      "id": "extract-company-id",
+      "name": "Extract LinkedIn Company ID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://nubela.co/proxycurl/api/linkedin/company/employees/",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "linkedin_company_profile_url",
+              "value": "={{ $json.company_url }}"
+            },
+            {
+              "name": "page_size",
+              "value": "={{ $json.max_results }}"
+            },
+            {
+              "name": "employment_status",
+              "value": "current"
+            },
+            {
+              "name": "role_search",
+              "value": "recruiter,human_resources,talent_acquisition,people_operations"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $credentials.proxycurlApiKey }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "fetch-company-employees",
+      "name": "Fetch Company Employees",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [900, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "proxycurl-api-cred",
+          "name": "Proxycurl API"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Filter HR Roles with keywords and regex\nconst inputData = $input.first().json;\nconst employees = inputData.employees || [];\n\nconst hrKeywords = [\n  'recruiter', 'talent acquisition', 'talent partner',\n  'hr manager', 'hr business partner', 'hrbp',\n  'people ops', 'people operations', 'people partner',\n  'sourcer', 'talent sourcer', 'recruiting coordinator',\n  'head of talent', 'director of recruiting',\n  'vp of people', 'chief people officer', 'cpo',\n  'human resources', 'talent management'\n];\n\nconst seniorityKeywords = {\n  executive: ['vp', 'vice president', 'chief', 'cpo', 'head of', 'executive'],\n  director: ['director', 'senior director'],\n  manager: ['manager', 'senior manager', 'lead', 'principal'],\n  individual: ['coordinator', 'specialist', 'recruiter', 'sourcer', 'associate']\n};\n\nconst hrEmployees = employees.filter(emp => {\n  const title = (emp.title || '').toLowerCase();\n  return hrKeywords.some(keyword => title.includes(keyword));\n}).map(emp => {\n  const title = (emp.title || '').toLowerCase();\n  \n  // Evaluate seniority\n  let seniority = 'individual';\n  for (const [level, keywords] of Object.entries(seniorityKeywords)) {\n    if (keywords.some(kw => title.includes(kw))) {\n      seniority = level;\n      break;\n    }\n  }\n  \n  return {\n    profile_url: emp.profile_url,\n    full_name: emp.full_name,\n    title: emp.title,\n    seniority: seniority,\n    location: emp.location || 'Unknown'\n  };\n});\n\nif (hrEmployees.length === 0) {\n  return [{\n    json: {\n      success: true,\n      message: 'No HR employees found at this company',\n      hr_contacts: [],\n      total_found: 0\n    }\n  }];\n}\n\nreturn hrEmployees.map(emp => ({ json: emp }));"
+      },
+      "id": "filter-hr-roles",
+      "name": "Filter HR Roles",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "batchSize": 5,
+        "options": {}
+      },
+      "id": "split-employee-batch",
+      "name": "Split Employee Batch",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [1340, 300]
+    },
+    {
+      "parameters": {
+        "amount": 2,
+        "unit": "seconds"
+      },
+      "id": "wait-rate-limit",
+      "name": "Wait (Rate Limit)",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [1560, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://nubela.co/proxycurl/api/v2/linkedin",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "url",
+              "value": "={{ $json.profile_url }}"
+            },
+            {
+              "name": "skills",
+              "value": "include"
+            },
+            {
+              "name": "use_cache",
+              "value": "if-recent"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $credentials.proxycurlApiKey }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "fetch-full-profile",
+      "name": "Fetch Full LinkedIn Profile",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1780, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "proxycurl-api-cred",
+          "name": "Proxycurl API"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse contact info from profile\nconst profile = $input.first().json;\n\nconst email = profile.email || null;\nconst phone = profile.phone_numbers?.[0] || null;\nconst firstName = profile.first_name || '';\nconst lastName = profile.last_name || '';\nconst headline = profile.headline || '';\nconst summary = profile.summary || '';\nconst experiences = profile.experiences || [];\nconst currentCompany = experiences.find(exp => !exp.ends_at)?.company || 'Unknown';\nconst skills = profile.skills || [];\n\nreturn [{\n  json: {\n    full_name: profile.full_name,\n    first_name: firstName,\n    last_name: lastName,\n    title: $input.first().json.title,\n    seniority: $input.first().json.seniority,\n    email: email,\n    phone: phone,\n    linkedin_url: profile.public_identifier ? `https://linkedin.com/in/${profile.public_identifier}` : $input.first().json.profile_url,\n    company: currentCompany,\n    headline: headline,\n    skills_count: skills.length,\n    experience_years: experiences.length,\n    profile_complete: !!email && !!phone\n  }\n}];"
+      },
+      "id": "parse-contact-info",
+      "name": "Parse Contact Info",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2000, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.hunter.io/v2/email-finder?domain={{ $json.company.toLowerCase().replace(/\\s+/g, '').replace(/inc\\.?|llc\\.?|ltd\\.?/gi, '') }}.com&first_name={{ $json.first_name }}&last_name={{ $json.last_name }}&api_key={{$credentials.hunterApiKey}}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "find-email-hunter",
+      "name": "Find Email via Hunter",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2220, 300],
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "hunter-api-cred",
+          "name": "Hunter.io API"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.data?.email }}",
+              "operation": "isNotEmpty"
+            }
+          ]
+        }
+      },
+      "id": "check-email-found",
+      "name": "Check if Email Found",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2440, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.neverbounce.com/v4/single/check",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "key",
+              "value": "={{$credentials.neverBounceApiKey}}"
+            },
+            {
+              "name": "email",
+              "value": "={{ $json.data.email }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "verify-email-found",
+      "name": "Verify Email (NeverBounce)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2660, 200],
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "neverbounce-api-cred",
+          "name": "NeverBounce API"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Generate email patterns and verify\nconst item = $input.first().json;\nconst firstName = (item.first_name || '').toLowerCase();\nconst lastName = (item.last_name || '').toLowerCase();\nconst domain = item.company.toLowerCase().replace(/\\s+/g, '').replace(/inc\\.?|llc\\.?|ltd\\.?/gi, '') + '.com';\n\n// Generate top 3 most common patterns\nconst patterns = [\n  `${firstName}.${lastName}@${domain}`,\n  `${firstName}@${domain}`,\n  `${firstName}${lastName}@${domain}`\n];\n\nreturn [{\n  json: {\n    ...item,\n    email_patterns: patterns,\n    email: patterns[0], // Use first pattern as primary\n    email_verified: false\n  }\n}];"
+      },
+      "id": "generate-patterns",
+      "name": "Generate Patterns & Mark Unverified",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2660, 400]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.apollo.io/v1/people/match?email={{ $json.email }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Api-Key",
+              "value": "={{ $credentials.apolloApiKey }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "enrich-apollo",
+      "name": "Enrich with Apollo.io",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2880, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "apollo-api-cred",
+          "name": "Apollo.io API"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Calculate Quality Score (0-100)\nconst item = $input.first().json;\n\nlet score = 0;\n\n// Verified email (30 points)\nif (item.email && (item.result === 'valid' || item.email_verified === true)) {\n  score += 30;\n}\n\n// Phone number (15 points)\nif (item.phone || item.person?.phone_numbers?.[0]) {\n  score += 15;\n}\n\n// LinkedIn complete profile (10 points)\nif (item.profile_complete || item.skills_count > 5) {\n  score += 10;\n}\n\n// Company size large >500 (10 points)\nif (item.person?.organization?.estimated_num_employees > 500) {\n  score += 10;\n}\n\n// Seniority scoring\nif (item.seniority === 'executive') score += 15;\nelse if (item.seniority === 'director') score += 10;\nelse if (item.seniority === 'manager') score += 5;\n\n// HR role exact match (10 points)\nconst title = (item.title || '').toLowerCase();\nif (title.includes('hr') || title.includes('talent') || title.includes('people')) {\n  score += 10;\n}\n\n// Recent activity (5 points) - assume true if profile exists\nif (item.linkedin_url) {\n  score += 5;\n}\n\nreturn [{\n  json: {\n    full_name: item.full_name,\n    email: item.email || item.email_patterns?.[0] || 'Not found',\n    phone: item.phone || item.person?.phone_numbers?.[0] || 'Not found',\n    title: item.title,\n    company: item.company || item.person?.organization?.name || 'Unknown',\n    linkedin_url: item.linkedin_url,\n    seniority: item.seniority,\n    quality_score: score,\n    email_verified: item.result === 'valid' || false,\n    skills_count: item.skills_count || 0,\n    timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "calculate-quality-score",
+      "name": "Calculate Quality Score",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3100, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{ $json.quality_score }}",
+              "operation": "larger",
+              "value2": 80
+            }
+          ]
+        }
+      },
+      "id": "route-hot-leads",
+      "name": "Route: Hot Leads (>80)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [3320, 300]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "hot-leads-sheet-id",
+          "mode": "list"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Hot Leads",
+          "mode": "list"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "full_name": "={{ $json.full_name }}",
+            "email": "={{ $json.email }}",
+            "phone": "={{ $json.phone }}",
+            "title": "={{ $json.title }}",
+            "company": "={{ $json.company }}",
+            "linkedin_url": "={{ $json.linkedin_url }}",
+            "quality_score": "={{ $json.quality_score }}",
+            "seniority": "={{ $json.seniority }}",
+            "created_at": "={{ $json.timestamp }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "save-hot-leads",
+      "name": "Save to Hot Leads Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [3540, 200],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "google-sheets-cred",
+          "name": "Google Sheets"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{ $json.quality_score }}",
+              "operation": "largerEqual",
+              "value2": 60
+            }
+          ]
+        }
+      },
+      "id": "route-cold-leads",
+      "name": "Route: Cold Leads (60-80)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [3540, 400]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "cold-leads-sheet-id",
+          "mode": "list"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Cold Leads",
+          "mode": "list"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "full_name": "={{ $json.full_name }}",
+            "email": "={{ $json.email }}",
+            "phone": "={{ $json.phone }}",
+            "title": "={{ $json.title }}",
+            "company": "={{ $json.company }}",
+            "quality_score": "={{ $json.quality_score }}",
+            "created_at": "={{ $json.timestamp }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "save-cold-leads",
+      "name": "Save to Cold Leads Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [3760, 400],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "google-sheets-cred",
+          "name": "Google Sheets"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "text",
+              "value": "=LinkedIn HR Discovery Complete\\n\\nCompany: {{ $('Input Validation').first().json.company_url }}\\nTotal HR Contacts: {{ $('Filter HR Roles').all().length }}\\nHot Leads (>80): {{ $('Save to Hot Leads Sheet').all().length }}\\nCold Leads (60-80): {{ $('Save to Cold Leads Sheet').all().length }}\\nAvg Quality Score: {{ Math.round($('Calculate Quality Score').all().reduce((sum, item) => sum + item.json.quality_score, 0) / $('Calculate Quality Score').all().length) }}/100"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "send-slack-summary",
+      "name": "Send Slack Summary",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3980, 300],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "activity-log-sheet-id",
+          "mode": "list"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Activity Log",
+          "mode": "list"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "timestamp": "={{ new Date().toISOString() }}",
+            "workflow_name": "LinkedIn HR Discovery",
+            "company_url": "={{ $('Input Validation').first().json.company_url }}",
+            "total_hr_found": "={{ $('Filter HR Roles').all().length }}",
+            "hot_leads": "={{ $('Save to Hot Leads Sheet').all().length || 0 }}",
+            "cold_leads": "={{ $('Save to Cold Leads Sheet').all().length || 0 }}",
+            "status": "success"
+          }
+        },
+        "options": {}
+      },
+      "id": "log-activity",
+      "name": "Log Activity",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [4200, 300],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "google-sheets-cred",
+          "name": "Google Sheets"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: true, hot_leads: $('Save to Hot Leads Sheet').all().length || 0, cold_leads: $('Save to Cold Leads Sheet').all().length || 0 }, null, 2) }}",
+        "options": {}
+      },
+      "id": "respond-to-webhook",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [4420, 300]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [[{"node": "Input Validation", "type": "main", "index": 0}]]
+    },
+    "Input Validation": {
+      "main": [[{"node": "Extract LinkedIn Company ID", "type": "main", "index": 0}]]
+    },
+    "Extract LinkedIn Company ID": {
+      "main": [[{"node": "Fetch Company Employees", "type": "main", "index": 0}]]
+    },
+    "Fetch Company Employees": {
+      "main": [[{"node": "Filter HR Roles", "type": "main", "index": 0}]]
+    },
+    "Filter HR Roles": {
+      "main": [[{"node": "Split Employee Batch", "type": "main", "index": 0}]]
+    },
+    "Split Employee Batch": {
+      "main": [
+        [{"node": "Wait (Rate Limit)", "type": "main", "index": 0}],
+        [{"node": "Send Slack Summary", "type": "main", "index": 0}]
+      ]
+    },
+    "Wait (Rate Limit)": {
+      "main": [[{"node": "Fetch Full LinkedIn Profile", "type": "main", "index": 0}]]
+    },
+    "Fetch Full LinkedIn Profile": {
+      "main": [[{"node": "Parse Contact Info", "type": "main", "index": 0}]]
+    },
+    "Parse Contact Info": {
+      "main": [[{"node": "Find Email via Hunter", "type": "main", "index": 0}]]
+    },
+    "Find Email via Hunter": {
+      "main": [[{"node": "Check if Email Found", "type": "main", "index": 0}]]
+    },
+    "Check if Email Found": {
+      "main": [
+        [{"node": "Verify Email (NeverBounce)", "type": "main", "index": 0}],
+        [{"node": "Generate Patterns & Mark Unverified", "type": "main", "index": 0}]
+      ]
+    },
+    "Verify Email (NeverBounce)": {
+      "main": [[{"node": "Enrich with Apollo.io", "type": "main", "index": 0}]]
+    },
+    "Generate Patterns & Mark Unverified": {
+      "main": [[{"node": "Enrich with Apollo.io", "type": "main", "index": 0}]]
+    },
+    "Enrich with Apollo.io": {
+      "main": [[{"node": "Calculate Quality Score", "type": "main", "index": 0}]]
+    },
+    "Calculate Quality Score": {
+      "main": [[{"node": "Route: Hot Leads (>80)", "type": "main", "index": 0}]]
+    },
+    "Route: Hot Leads (>80)": {
+      "main": [
+        [{"node": "Save to Hot Leads Sheet", "type": "main", "index": 0}],
+        [{"node": "Route: Cold Leads (60-80)", "type": "main", "index": 0}]
+      ]
+    },
+    "Save to Hot Leads Sheet": {
+      "main": [[{"node": "Split Employee Batch", "type": "main", "index": 0}]]
+    },
+    "Route: Cold Leads (60-80)": {
+      "main": [
+        [{"node": "Save to Cold Leads Sheet", "type": "main", "index": 0}]
+      ]
+    },
+    "Save to Cold Leads Sheet": {
+      "main": [[{"node": "Split Employee Batch", "type": "main", "index": 0}]]
+    },
+    "Send Slack Summary": {
+      "main": [[{"node": "Log Activity", "type": "main", "index": 0}]]
+    },
+    "Log Activity": {
+      "main": [[{"node": "Respond to Webhook", "type": "main", "index": 0}]]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 1,
+  "updatedAt": "2024-01-15T00:00:00.000Z",
+  "versionId": "1"
+}

@@ -1,0 +1,687 @@
+{
+  "name": "Email Finder & Multi-Provider Verification Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "email-verification-pipeline",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Input Validation & Normalization\nconst inputData = $input.first().json;\nconst requestData = inputData.body || inputData;\n\n// Validate required fields\nif (!requestData.companies || !Array.isArray(requestData.companies)) {\n  throw new Error('companies array is required in request body');\n}\n\nconst validatedCompanies = [];\nconst errors = [];\n\nfor (let i = 0; i < requestData.companies.length; i++) {\n  const company = requestData.companies[i];\n  \n  if (!company.company_name || company.company_name.trim() === '') {\n    errors.push({ index: i, error: 'company_name is required' });\n    continue;\n  }\n  \n  if (!company.job_title || company.job_title.trim() === '') {\n    errors.push({ index: i, error: 'job_title is required' });\n    continue;\n  }\n  \n  // Sanitize inputs\n  validatedCompanies.push({\n    company_name: company.company_name.trim(),\n    job_title: company.job_title.trim(),\n    first_name: (company.first_name || '').trim(),\n    last_name: (company.last_name || '').trim(),\n    original_index: i\n  });\n}\n\nif (validatedCompanies.length === 0) {\n  throw new Error('No valid companies found. Errors: ' + JSON.stringify(errors));\n}\n\nreturn [{\n  json: {\n    companies: validatedCompanies,\n    total_input: requestData.companies.length,\n    valid_count: validatedCompanies.length,\n    validation_errors: errors,\n    timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "input-validation",
+      "name": "Input Validation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "batchSize": 10,
+        "options": {}
+      },
+      "id": "split-companies-batch",
+      "name": "Split Companies Batch",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract companies from current batch\nconst inputData = $input.first().json;\nconst companies = inputData.companies || [];\n\nconst results = [];\n\nfor (const company of companies) {\n  results.push({\n    json: {\n      company_name: company.company_name,\n      job_title: company.job_title,\n      first_name: company.first_name,\n      last_name: company.last_name,\n      original_index: company.original_index\n    }\n  });\n}\n\nreturn results;"
+      },
+      "id": "expand-companies",
+      "name": "Expand Companies",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.hunter.io/v2/domain-search?domain={{ $json.company_name.toLowerCase().replace(/\\s+/g, '').replace(/inc\\.?|llc\\.?|ltd\\.?/gi, '') }}.com&api_key={{$credentials.hunterApiKey}}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "find-company-domain",
+      "name": "Find Company Domain",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1120, 300],
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "hunter-api-cred",
+          "name": "Hunter.io API"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Generate 8 email patterns\nconst item = $input.first().json;\nconst firstName = (item.first_name || 'john').toLowerCase();\nconst lastName = (item.last_name || 'doe').toLowerCase();\n\n// Extract domain from Hunter response or construct from company name\nlet domain = '';\ntry {\n  if (item.data && item.data.domain) {\n    domain = item.data.domain;\n  } else {\n    // Fallback: construct domain from company name\n    domain = item.company_name.toLowerCase()\n      .replace(/\\s+/g, '')\n      .replace(/inc\\.?|llc\\.?|ltd\\.?|corporation|corp\\.?/gi, '') + '.com';\n  }\n} catch (error) {\n  domain = item.company_name.toLowerCase().replace(/\\s+/g, '') + '.com';\n}\n\nconst patterns = [\n  `${firstName}.${lastName}@${domain}`,\n  `${firstName}@${domain}`,\n  `${lastName}@${domain}`,\n  `${firstName.charAt(0)}.${lastName}@${domain}`,\n  `${firstName}${lastName}@${domain}`,\n  `${firstName}_${lastName}@${domain}`,\n  `${firstName.charAt(0)}${lastName}@${domain}`,\n  `${lastName}${firstName.charAt(0)}@${domain}`\n];\n\n// Remove duplicates and return\nconst uniquePatterns = [...new Set(patterns)];\n\nconst results = uniquePatterns.map(email => ({\n  json: {\n    email: email,\n    company_name: item.company_name,\n    job_title: item.job_title,\n    domain: domain,\n    first_name: firstName,\n    last_name: lastName,\n    pattern_type: email.split('@')[0]\n  }\n}));\n\nreturn results;"
+      },
+      "id": "generate-email-patterns",
+      "name": "Generate Email Patterns",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1340, 300]
+    },
+    {
+      "parameters": {
+        "batchSize": 5,
+        "options": {}
+      },
+      "id": "split-email-batch",
+      "name": "Split Email Batch",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [1560, 300]
+    },
+    {
+      "parameters": {
+        "amount": 2,
+        "unit": "seconds"
+      },
+      "id": "wait-rate-limit",
+      "name": "Wait (Rate Limit)",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [1780, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.hunter.io/v2/email-verifier?email={{ $json.email }}&api_key={{$credentials.hunterApiKey}}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "hunter-verifier",
+      "name": "Hunter.io Verifier",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2000, 200],
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "hunter-api-cred",
+          "name": "Hunter.io API"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.neverbounce.com/v4/single/check",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "key",
+              "value": "={{$credentials.neverBounceApiKey}}"
+            },
+            {
+              "name": "email",
+              "value": "={{ $json.email }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "neverbounce-verifier",
+      "name": "NeverBounce Verifier",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2000, 300],
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "neverbounce-api-cred",
+          "name": "NeverBounce API"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.debounce.io/v1/?api={{ $credentials.debounceApiKey }}&email={{ $json.email }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "debounce-verifier",
+      "name": "Debounce.io Verifier",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2000, 400],
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "debounce-api-cred",
+          "name": "Debounce.io API"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "mode": "mergeByIndex"
+      },
+      "id": "merge-verification-results",
+      "name": "Merge Verification Results",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [2220, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Consensus Scoring Algorithm\nconst items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  try {\n    const email = item.json.email;\n    let score = 0;\n    let verifiedCount = 0;\n    const flags = [];\n    const providerResults = {\n      hunter: null,\n      neverbounce: null,\n      debounce: null\n    };\n    \n    // Parse Hunter.io result\n    if (item.json.data && item.json.data.status) {\n      providerResults.hunter = item.json.data;\n      if (item.json.data.status === 'valid') {\n        score += 35;\n        verifiedCount++;\n      }\n      if (item.json.data.accept_all) flags.push('catch-all');\n      if (item.json.data.disposable) {\n        flags.push('disposable');\n        score -= 50;\n      }\n    }\n    \n    // Parse NeverBounce result\n    if (item.json.result) {\n      providerResults.neverbounce = item.json;\n      if (item.json.result === 'valid') {\n        score += 35;\n        verifiedCount++;\n      } else if (item.json.result === 'catchall') {\n        flags.push('catch-all');\n      } else if (item.json.result === 'disposable') {\n        flags.push('disposable');\n        score -= 50;\n      }\n    }\n    \n    // Parse Debounce.io result\n    if (item.json.debounce) {\n      providerResults.debounce = item.json.debounce;\n      if (item.json.debounce.send_transactional === '1') {\n        score += 30;\n        verifiedCount++;\n      }\n      if (item.json.debounce.disposable === '1') {\n        flags.push('disposable');\n        score -= 50;\n      }\n    }\n    \n    // Apply catch-all deduction\n    if (flags.includes('catch-all')) {\n      score -= 15;\n    }\n    \n    // Ensure score is between 0-100\n    score = Math.max(0, Math.min(100, score));\n    \n    results.push({\n      json: {\n        email: email,\n        company_name: item.json.company_name,\n        job_title: item.json.job_title,\n        domain: item.json.domain,\n        confidence_score: score,\n        verified_by_count: verifiedCount,\n        is_deliverable: score >= 85,\n        flags: flags,\n        provider_results: providerResults,\n        timestamp: new Date().toISOString()\n      }\n    });\n  } catch (error) {\n    console.error('Scoring error:', error.message);\n    // Continue processing other emails\n  }\n}\n\nreturn results;"
+      },
+      "id": "consensus-scoring",
+      "name": "Consensus Scoring Algorithm",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2440, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{ $json.confidence_score }}",
+              "operation": "largerEqual",
+              "value2": 85
+            }
+          ]
+        }
+      },
+      "id": "filter-by-confidence",
+      "name": "Filter by Confidence >= 85",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2660, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://nubela.co/proxycurl/api/linkedin/profile/email?linkedin_profile_url=https://linkedin.com/in/{{ $json.first_name }}-{{ $json.last_name }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $credentials.proxycurlApiKey }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "enrich-linkedin",
+      "name": "Enrich with LinkedIn",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2880, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "proxycurl-api-cred",
+          "name": "Proxycurl API"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Format output and tag quality tier\nconst item = $input.first().json;\n\nlet qualityTag = '';\nif (item.confidence_score >= 95) {\n  qualityTag = 'Premium';\n} else if (item.confidence_score >= 85) {\n  qualityTag = 'Good';\n} else {\n  qualityTag = 'Unverified';\n}\n\nreturn [{\n  json: {\n    email: item.email,\n    company_name: item.company_name,\n    job_title: item.job_title,\n    domain: item.domain,\n    confidence_score: item.confidence_score,\n    quality_tag: qualityTag,\n    verified_by_count: item.verified_by_count,\n    is_deliverable: item.is_deliverable,\n    flags: item.flags.join(', '),\n    linkedin_profile: item.linkedin_profile_url || '',\n    hunter_valid: item.provider_results.hunter?.status === 'valid',\n    neverbounce_valid: item.provider_results.neverbounce?.result === 'valid',\n    debounce_valid: item.provider_results.debounce?.send_transactional === '1',\n    created_at: item.timestamp\n  }\n}];"
+      },
+      "id": "format-output",
+      "name": "Format Output & Tag Quality",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3100, 300]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1234567890abcdef",
+          "mode": "list"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Verified Contacts",
+          "mode": "list"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "email": "={{ $json.email }}",
+            "company_name": "={{ $json.company_name }}",
+            "job_title": "={{ $json.job_title }}",
+            "confidence_score": "={{ $json.confidence_score }}",
+            "quality_tag": "={{ $json.quality_tag }}",
+            "verified_by_count": "={{ $json.verified_by_count }}",
+            "flags": "={{ $json.flags }}",
+            "created_at": "={{ $json.created_at }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "save-to-sheets",
+      "name": "Save to Google Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [3320, 300],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "google-sheets-cred",
+          "name": "Google Sheets"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.CRM_WEBHOOK_URL }}",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "email",
+              "value": "={{ $json.email }}"
+            },
+            {
+              "name": "company",
+              "value": "={{ $json.company_name }}"
+            },
+            {
+              "name": "title",
+              "value": "={{ $json.job_title }}"
+            },
+            {
+              "name": "confidence",
+              "value": "={{ $json.confidence_score }}"
+            },
+            {
+              "name": "quality",
+              "value": "={{ $json.quality_tag }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "send-to-crm",
+      "name": "Send to CRM",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3540, 300],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "activity-log-sheet-id",
+          "mode": "list"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Activity Log",
+          "mode": "list"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "timestamp": "={{ new Date().toISOString() }}",
+            "workflow_name": "Email Finder & Verification Pipeline",
+            "company": "={{ $json.company_name }}",
+            "email": "={{ $json.email }}",
+            "confidence": "={{ $json.confidence_score }}",
+            "status": "success",
+            "quality_tag": "={{ $json.quality_tag }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "log-activity",
+      "name": "Log Activity to Google Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [3760, 300],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "google-sheets-cred",
+          "name": "Google Sheets"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Aggregate all results for response\nconst allItems = $('Split Email Batch').all();\n\nconst verifiedEmails = allItems.filter(item => \n  item.json.is_deliverable && item.json.confidence_score >= 85\n);\n\nconst totalProcessed = allItems.length;\nconst totalVerified = verifiedEmails.length;\nconst avgConfidence = verifiedEmails.reduce((sum, item) => \n  sum + item.json.confidence_score, 0) / (totalVerified || 1);\n\nconst premiumCount = verifiedEmails.filter(item => \n  item.json.confidence_score >= 95).length;\nconst goodCount = verifiedEmails.filter(item => \n  item.json.confidence_score >= 85 && item.json.confidence_score < 95).length;\n\nreturn [{\n  json: {\n    success: true,\n    summary: {\n      total_emails_processed: totalProcessed,\n      verified_emails: totalVerified,\n      success_rate: ((totalVerified / totalProcessed) * 100).toFixed(2) + '%',\n      avg_confidence_score: avgConfidence.toFixed(2),\n      premium_contacts: premiumCount,\n      good_contacts: goodCount\n    },\n    verified_contacts: verifiedEmails.map(item => ({\n      email: item.json.email,\n      company: item.json.company_name,\n      job_title: item.json.job_title,\n      confidence_score: item.json.confidence_score,\n      quality_tag: item.json.quality_tag,\n      verified_by_count: item.json.verified_by_count\n    })),\n    timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "prepare-response",
+      "name": "Prepare Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3980, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json, null, 2) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "respond-to-webhook",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [4200, 300]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "error-log-sheet-id",
+          "mode": "list"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Error Log",
+          "mode": "list"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "timestamp": "={{ new Date().toISOString() }}",
+            "workflow_name": "Email Finder & Verification Pipeline",
+            "error_type": "={{ $json.error?.message || 'Provider Failure' }}",
+            "node_name": "={{ $json.node }}",
+            "email": "={{ $json.email || 'N/A' }}",
+            "provider": "={{ $json.provider || 'Unknown' }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "error-handler-log",
+      "name": "Error Handler - Log Failures",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [2440, 500],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "google-sheets-cred",
+          "name": "Google Sheets"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Input Validation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Input Validation": {
+      "main": [
+        [
+          {
+            "node": "Split Companies Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Companies Batch": {
+      "main": [
+        [
+          {
+            "node": "Expand Companies",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Expand Companies": {
+      "main": [
+        [
+          {
+            "node": "Find Company Domain",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Company Domain": {
+      "main": [
+        [
+          {
+            "node": "Generate Email Patterns",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Email Patterns": {
+      "main": [
+        [
+          {
+            "node": "Split Email Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Email Batch": {
+      "main": [
+        [
+          {
+            "node": "Wait (Rate Limit)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait (Rate Limit)": {
+      "main": [
+        [
+          {
+            "node": "Hunter.io Verifier",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "NeverBounce Verifier",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Debounce.io Verifier",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Hunter.io Verifier": {
+      "main": [
+        [
+          {
+            "node": "Merge Verification Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "NeverBounce Verifier": {
+      "main": [
+        [
+          {
+            "node": "Merge Verification Results",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Debounce.io Verifier": {
+      "main": [
+        [
+          {
+            "node": "Merge Verification Results",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "Merge Verification Results": {
+      "main": [
+        [
+          {
+            "node": "Consensus Scoring Algorithm",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consensus Scoring Algorithm": {
+      "main": [
+        [
+          {
+            "node": "Filter by Confidence >= 85",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter by Confidence >= 85": {
+      "main": [
+        [
+          {
+            "node": "Enrich with LinkedIn",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enrich with LinkedIn": {
+      "main": [
+        [
+          {
+            "node": "Format Output & Tag Quality",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Output & Tag Quality": {
+      "main": [
+        [
+          {
+            "node": "Save to Google Sheets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save to Google Sheets": {
+      "main": [
+        [
+          {
+            "node": "Send to CRM",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send to CRM": {
+      "main": [
+        [
+          {
+            "node": "Log Activity to Google Sheets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Activity to Google Sheets": {
+      "main": [
+        [
+          {
+            "node": "Split Email Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Response": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 1,
+  "updatedAt": "2024-01-15T00:00:00.000Z",
+  "versionId": "1"
+}

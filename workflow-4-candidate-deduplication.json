@@ -1,0 +1,477 @@
+{
+  "name": "Candidate Deduplication & Data Enrichment System",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "candidate-deduplication",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [240, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Input Validation\nconst inputData = $input.first().json;\nconst requestData = inputData.body || inputData;\n\nif (!requestData.candidates || !Array.isArray(requestData.candidates)) {\n  throw new Error('candidates array is required');\n}\n\nif (requestData.candidates.length === 0) {\n  throw new Error('candidates array cannot be empty');\n}\n\n// Validate structure\nconst validCandidates = requestData.candidates.filter(c => \n  c.first_name && c.last_name && (c.email || c.phone)\n);\n\nif (validCandidates.length === 0) {\n  throw new Error('No valid candidates found. Each candidate must have first_name, last_name, and either email or phone.');\n}\n\nreturn [{\n  json: {\n    candidates: validCandidates,\n    total_input: requestData.candidates.length,\n    valid_count: validCandidates.length,\n    timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "input-validation",
+      "name": "Input Validation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalize fields: clean phone, email, names\nconst candidates = $input.first().json.candidates;\n\nfunction normalizePhone(phone) {\n  if (!phone) return null;\n  return phone.replace(/[^0-9]/g, '').slice(-10); // Last 10 digits\n}\n\nfunction normalizeEmail(email) {\n  if (!email) return null;\n  return email.toLowerCase().trim();\n}\n\nfunction normalizeName(name) {\n  if (!name) return '';\n  return name.trim().toLowerCase().replace(/[^a-z]/g, '');\n}\n\nconst normalized = candidates.map(c => ({\n  json: {\n    first_name: c.first_name.trim(),\n    last_name: c.last_name.trim(),\n    first_name_normalized: normalizeName(c.first_name),\n    last_name_normalized: normalizeName(c.last_name),\n    email: normalizeEmail(c.email),\n    phone: normalizePhone(c.phone),\n    company: (c.company || '').trim(),\n    job_title: (c.job_title || '').trim(),\n    linkedin_url: (c.linkedin_url || '').trim(),\n    skills: Array.isArray(c.skills) ? c.skills : (c.skills || '').split(',').map(s => s.trim()),\n    source: c.source || 'unknown'\n  }\n}));\n\nreturn normalized;"
+      },
+      "id": "normalize-fields",
+      "name": "Normalize Fields",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 400]
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "documentId": {
+          "__rl": true,
+          "value": "master-candidates-db-id",
+          "mode": "list"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Master Candidates",
+          "mode": "list"
+        },
+        "options": {}
+      },
+      "id": "load-master-database",
+      "name": "Load Master Database",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [900, 400],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "google-sheets-cred",
+          "name": "Google Sheets"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Fuzzy Matching - Levenshtein + exact email/phone match\nconst newCandidate = $input.first().json;\nconst masterDb = $('Load Master Database').all().map(item => item.json);\n\n// Levenshtein distance function\nfunction levenshtein(a, b) {\n  const matrix = [];\n  for (let i = 0; i <= b.length; i++) {\n    matrix[i] = [i];\n  }\n  for (let j = 0; j <= a.length; j++) {\n    matrix[0][j] = j;\n  }\n  for (let i = 1; i <= b.length; i++) {\n    for (let j = 1; j <= a.length; j++) {\n      if (b.charAt(i - 1) === a.charAt(j - 1)) {\n        matrix[i][j] = matrix[i - 1][j - 1];\n      } else {\n        matrix[i][j] = Math.min(\n          matrix[i - 1][j - 1] + 1,\n          matrix[i][j - 1] + 1,\n          matrix[i - 1][j] + 1\n        );\n      }\n    }\n  }\n  return matrix[b.length][a.length];\n}\n\n// Check for duplicates\nlet isDuplicate = false;\nlet matchedRecord = null;\nlet matchReason = '';\n\nfor (const existing of masterDb) {\n  // Exact email match\n  if (newCandidate.email && existing.email && newCandidate.email === existing.email) {\n    isDuplicate = true;\n    matchedRecord = existing;\n    matchReason = 'exact_email_match';\n    break;\n  }\n  \n  // Exact phone match + name similarity ≤2\n  if (newCandidate.phone && existing.phone && newCandidate.phone === existing.phone) {\n    const nameDist = levenshtein(\n      newCandidate.first_name_normalized + newCandidate.last_name_normalized,\n      (existing.first_name_normalized || '') + (existing.last_name_normalized || '')\n    );\n    if (nameDist <= 2) {\n      isDuplicate = true;\n      matchedRecord = existing;\n      matchReason = 'phone_match_name_similar';\n      break;\n    }\n  }\n  \n  // Name Levenshtein ≤2 + same company (flag for review)\n  const fullNameDist = levenshtein(\n    newCandidate.first_name_normalized + newCandidate.last_name_normalized,\n    (existing.first_name_normalized || '') + (existing.last_name_normalized || '')\n  );\n  if (fullNameDist <= 2 && newCandidate.company && existing.company && \n      newCandidate.company.toLowerCase() === existing.company.toLowerCase()) {\n    isDuplicate = true;\n    matchedRecord = existing;\n    matchReason = 'fuzzy_name_same_company';\n    break;\n  }\n}\n\nreturn [{\n  json: {\n    ...newCandidate,\n    is_duplicate: isDuplicate,\n    matched_record: matchedRecord,\n    match_reason: matchReason\n  }\n}];"
+      },
+      "id": "fuzzy-matching",
+      "name": "Fuzzy Matching",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.is_duplicate }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "check-duplicate",
+      "name": "Check if Duplicate",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1340, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Merge duplicate records - prefer newest data\nconst newData = $input.first().json;\nconst existing = newData.matched_record;\n\nconst merged = {\n  // Use new data if exists, otherwise keep existing\n  first_name: newData.first_name || existing.first_name,\n  last_name: newData.last_name || existing.last_name,\n  email: newData.email || existing.email,\n  phone: newData.phone || existing.phone,\n  company: newData.company || existing.company,\n  job_title: newData.job_title || existing.job_title,\n  linkedin_url: newData.linkedin_url || existing.linkedin_url,\n  skills: [...new Set([...(existing.skills || []), ...(newData.skills || [])])],\n  sources: [...new Set([...(existing.sources || []), newData.source])],\n  last_updated: new Date().toISOString(),\n  match_reason: newData.match_reason,\n  duplicate_count: (existing.duplicate_count || 0) + 1\n};\n\nreturn [{\n  json: {\n    ...merged,\n    action: 'update_existing',\n    record_id: existing.id\n  }\n}];"
+      },
+      "id": "merge-duplicate",
+      "name": "Merge Duplicate Records",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1560, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.neverbounce.com/v4/single/check",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "key",
+              "value": "={{$credentials.neverBounceApiKey}}"
+            },
+            {
+              "name": "email",
+              "value": "={{ $json.email }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "validate-email",
+      "name": "Validate Email (NeverBounce)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1560, 500],
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "neverbounce-api-cred",
+          "name": "NeverBounce API"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://company.clearbit.com/v2/companies/find?domain={{ $json.company.toLowerCase().replace(/\\s+/g, '').replace(/inc\\.?|llc\\.?|ltd\\.?/gi, '') }}.com",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $credentials.clearbitApiKey }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "enrich-company",
+      "name": "Enrich Company (Clearbit)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1780, 500],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "clearbit-api-cred",
+          "name": "Clearbit API"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://nubela.co/proxycurl/api/linkedin/profile/resolve?linkedin_profile_url={{ $json.linkedin_url }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $credentials.proxycurlApiKey }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "find-linkedin",
+      "name": "Find LinkedIn Profile",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2000, 500],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "proxycurl-api-cred",
+          "name": "Proxycurl API"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $credentials.openaiApiKey }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  model: 'gpt-4o-mini',\n  temperature: 0.3,\n  messages: [{\n    role: 'user',\n    content: `Extract technical and soft skills from this candidate profile:\\n\\nName: ${$json.first_name} ${$json.last_name}\\nJob Title: ${$json.job_title}\\nCompany: ${$json.company}\\nRaw Skills: ${$json.skills.join(', ')}\\n\\nReturn ONLY a JSON array of skills, standardized and deduplicated:\\n[\"Skill 1\", \"Skill 2\", \"Skill 3\"]\\n\\nFocus on: technical skills, tools, frameworks, methodologies, certifications.`\n  }]\n}) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "extract-skills-gpt4",
+      "name": "Extract Skills (GPT-4)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2220, 500],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "openai-api-cred",
+          "name": "OpenAI API"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $credentials.openaiApiKey }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  model: 'gpt-4o-mini',\n  temperature: 0.2,\n  messages: [{\n    role: 'user',\n    content: `Standardize this job title to a common industry format:\\n\\nTitle: ${$json.job_title}\\n\\nReturn ONLY the standardized title, nothing else.\\nExamples:\\n- \"Sr. SWE\" → \"Senior Software Engineer\"\\n- \"Talent Acq Specialist\" → \"Talent Acquisition Specialist\"\\n- \"HR Mgr\" → \"HR Manager\"`\n  }]\n}) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "standardize-job-title",
+      "name": "Standardize Job Title (GPT-4)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2440, 500],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "openai-api-cred",
+          "name": "OpenAI API"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Calculate Candidate Score (0-100)\nconst item = $input.first().json;\n\nlet score = 0;\n\n// Completeness scoring\nif (item.email) score += 10;\nif (item.phone) score += 10;\nif (item.linkedin_url) score += 10;\nif (item.company) score += 5;\nif (item.job_title) score += 5;\nif (item.skills && item.skills.length >= 5) score += 10;\n\n// Experience scoring (estimate from skills count and title)\nconst skillsCount = item.skills?.length || 0;\nif (skillsCount >= 15) score += 20;      // 10+ years\nelse if (skillsCount >= 10) score += 15; // 6-10 years\nelse if (skillsCount >= 5) score += 10;  // 3-5 years\nelse score += 5;                          // 0-2 years\n\n// Engagement scoring\nif (item.result === 'valid') score += 10; // Recent/valid email\nif (item.source === 'application') score += 10; // Active application\n\n// Email verification bonus\nif (item.result === 'valid') score += 5;\n\n// Assign tier\nlet tier = 'C';\nif (score >= 80) tier = 'A';\nelse if (score >= 60) tier = 'B';\n\nreturn [{\n  json: {\n    first_name: item.first_name,\n    last_name: item.last_name,\n    email: item.email,\n    email_valid: item.result === 'valid',\n    phone: item.phone,\n    company: item.company,\n    company_size: item.employees || 'Unknown',\n    job_title: item.choices?.[0]?.message?.content || item.job_title,\n    linkedin_url: item.linkedin_url,\n    skills: JSON.parse(item.choices?.[0]?.message?.content || JSON.stringify(item.skills || [])),\n    candidate_score: score,\n    tier: tier,\n    source: item.source,\n    created_at: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "calculate-score",
+      "name": "Calculate Candidate Score",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2660, 500]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Assign recruiter (round-robin or specialization)\nconst candidate = $input.first().json;\n\nconst recruiters = [\n  { name: 'Alice Johnson', specialization: 'Tech', email: 'alice@ibovi.com' },\n  { name: 'Bob Smith', specialization: 'Healthcare', email: 'bob@ibovi.com' },\n  { name: 'Carol Lee', specialization: 'Finance', email: 'carol@ibovi.com' }\n];\n\n// Simple round-robin based on candidate hash\nconst hash = (candidate.email || '').split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);\nconst assignedRecruiter = recruiters[hash % recruiters.length];\n\nreturn [{\n  json: {\n    ...candidate,\n    assigned_recruiter: assignedRecruiter.name,\n    assigned_recruiter_email: assignedRecruiter.email\n  }\n}];"
+      },
+      "id": "assign-recruiter",
+      "name": "Assign Recruiter",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2880, 500]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "master-candidates-db-id",
+          "mode": "list"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Master Candidates",
+          "mode": "list"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "first_name": "={{ $json.first_name }}",
+            "last_name": "={{ $json.last_name }}",
+            "email": "={{ $json.email }}",
+            "phone": "={{ $json.phone }}",
+            "company": "={{ $json.company }}",
+            "job_title": "={{ $json.job_title }}",
+            "linkedin_url": "={{ $json.linkedin_url }}",
+            "skills": "={{ $json.skills.join(', ') }}",
+            "candidate_score": "={{ $json.candidate_score }}",
+            "tier": "={{ $json.tier }}",
+            "assigned_recruiter": "={{ $json.assigned_recruiter }}",
+            "source": "={{ $json.source }}",
+            "created_at": "={{ $json.created_at }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "upsert-to-master",
+      "name": "Upsert to Master Database",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [3100, 400],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "google-sheets-cred",
+          "name": "Google Sheets"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.ATS_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  candidate: {\n    first_name: $json.first_name,\n    last_name: $json.last_name,\n    email: $json.email,\n    phone: $json.phone,\n    linkedin: $json.linkedin_url,\n    title: $json.job_title,\n    skills: $json.skills,\n    score: $json.candidate_score,\n    tier: $json.tier\n  }\n}) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "send-to-ats",
+      "name": "Send to ATS",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3320, 400],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "activity-log-sheet-id",
+          "mode": "list"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Activity Log",
+          "mode": "list"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "timestamp": "={{ new Date().toISOString() }}",
+            "workflow_name": "Candidate Deduplication",
+            "total_input": "={{ $('Input Validation').first().json.total_input }}",
+            "duplicates_found": "={{ $('Merge Duplicate Records').all().length }}",
+            "new_candidates": "={{ $('Upsert to Master Database').all().length }}",
+            "avg_score": "={{ Math.round($('Calculate Candidate Score').all().reduce((sum, item) => sum + item.json.candidate_score, 0) / $('Calculate Candidate Score').all().length) }}",
+            "status": "success"
+          }
+        },
+        "options": {}
+      },
+      "id": "log-activity",
+      "name": "Log Activity",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [3540, 400],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "google-sheets-cred",
+          "name": "Google Sheets"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({\n  success: true,\n  summary: {\n    total_input: $('Input Validation').first().json.total_input,\n    duplicates_found: $('Merge Duplicate Records').all().length,\n    new_candidates: $('Upsert to Master Database').all().length,\n    unique_count: $('Upsert to Master Database').all().length,\n    avg_candidate_score: Math.round($('Calculate Candidate Score').all().reduce((sum, item) => sum + item.json.candidate_score, 0) / $('Calculate Candidate Score').all().length),\n    tier_breakdown: {\n      tier_a: $('Calculate Candidate Score').all().filter(item => item.json.tier === 'A').length,\n      tier_b: $('Calculate Candidate Score').all().filter(item => item.json.tier === 'B').length,\n      tier_c: $('Calculate Candidate Score').all().filter(item => item.json.tier === 'C').length\n    }\n  }\n}, null, 2) }}",
+        "options": {}
+      },
+      "id": "respond-to-webhook",
+      "name": "Send Summary Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [3760, 400]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [[{"node": "Input Validation", "type": "main", "index": 0}]]
+    },
+    "Input Validation": {
+      "main": [[{"node": "Normalize Fields", "type": "main", "index": 0}]]
+    },
+    "Normalize Fields": {
+      "main": [[{"node": "Load Master Database", "type": "main", "index": 0}]]
+    },
+    "Load Master Database": {
+      "main": [[{"node": "Fuzzy Matching", "type": "main", "index": 0}]]
+    },
+    "Fuzzy Matching": {
+      "main": [[{"node": "Check if Duplicate", "type": "main", "index": 0}]]
+    },
+    "Check if Duplicate": {
+      "main": [
+        [{"node": "Merge Duplicate Records", "type": "main", "index": 0}],
+        [{"node": "Validate Email (NeverBounce)", "type": "main", "index": 0}]
+      ]
+    },
+    "Merge Duplicate Records": {
+      "main": [[{"node": "Upsert to Master Database", "type": "main", "index": 0}]]
+    },
+    "Validate Email (NeverBounce)": {
+      "main": [[{"node": "Enrich Company (Clearbit)", "type": "main", "index": 0}]]
+    },
+    "Enrich Company (Clearbit)": {
+      "main": [[{"node": "Find LinkedIn Profile", "type": "main", "index": 0}]]
+    },
+    "Find LinkedIn Profile": {
+      "main": [[{"node": "Extract Skills (GPT-4)", "type": "main", "index": 0}]]
+    },
+    "Extract Skills (GPT-4)": {
+      "main": [[{"node": "Standardize Job Title (GPT-4)", "type": "main", "index": 0}]]
+    },
+    "Standardize Job Title (GPT-4)": {
+      "main": [[{"node": "Calculate Candidate Score", "type": "main", "index": 0}]]
+    },
+    "Calculate Candidate Score": {
+      "main": [[{"node": "Assign Recruiter", "type": "main", "index": 0}]]
+    },
+    "Assign Recruiter": {
+      "main": [[{"node": "Upsert to Master Database", "type": "main", "index": 0}]]
+    },
+    "Upsert to Master Database": {
+      "main": [[{"node": "Send to ATS", "type": "main", "index": 0}]]
+    },
+    "Send to ATS": {
+      "main": [[{"node": "Log Activity", "type": "main", "index": 0}]]
+    },
+    "Log Activity": {
+      "main": [[{"node": "Send Summary Response", "type": "main", "index": 0}]]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 1,
+  "updatedAt": "2024-01-15T00:00:00.000Z",
+  "versionId": "1"
+}
