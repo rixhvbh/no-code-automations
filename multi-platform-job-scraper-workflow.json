@@ -1,0 +1,891 @@
+{
+  "name": "Multi-Platform Job Scraper with Intelligent Proxy Rotation",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 */6 * * *"
+            }
+          ]
+        }
+      },
+      "id": "node-001",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 300],
+      "notes": "Runs every 6 hours - can also be triggered manually"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Search Parameters Configuration\nconst inputData = $input.first()?.json || {};\n\n// Default search parameters with validation\nconst searchParams = {\n  jobTitle: inputData.jobTitle || 'Software Engineer',\n  location: inputData.location || 'Remote',\n  platforms: inputData.platforms || ['indeed', 'ziprecruiter', 'glassdoor'],\n  maxResultsPerPlatform: inputData.maxResultsPerPlatform || 50,\n  timestamp: new Date().toISOString(),\n  sessionId: `scrape-${Date.now()}`\n};\n\n// Validate required fields\nif (!searchParams.jobTitle || !searchParams.location) {\n  throw new Error('Job title and location are required parameters');\n}\n\nconsole.log('Search Parameters:', searchParams);\n\nreturn [{\n  json: searchParams\n}];"
+      },
+      "id": "node-002",
+      "name": "Search Parameters Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 300],
+      "notes": "Configure job search parameters with validation"
+    },
+    {
+      "parameters": {
+        "mode": "expression",
+        "output": "multipleOutputs",
+        "rules": {
+          "rules": [
+            {
+              "output": 0,
+              "conditions": {
+                "options": {
+                  "caseSensitive": false
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.platforms }}",
+                    "rightValue": "indeed",
+                    "operator": {
+                      "type": "array",
+                      "operation": "contains"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "output": 1,
+              "conditions": {
+                "options": {
+                  "caseSensitive": false
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.platforms }}",
+                    "rightValue": "ziprecruiter",
+                    "operator": {
+                      "type": "array",
+                      "operation": "contains"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "output": 2,
+              "conditions": {
+                "options": {
+                  "caseSensitive": false
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.platforms }}",
+                    "rightValue": "glassdoor",
+                    "operator": {
+                      "type": "array",
+                      "operation": "contains"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        }
+      },
+      "id": "node-003",
+      "name": "Split by Platform",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [640, 300],
+      "notes": "Route to different platform scrapers"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Proxy Rotation Logic\nconst proxies = [\n  'http://scraperapi:YOUR_SCRAPERAPI_KEY@proxy-server.scraperapi.com:8001',\n  'http://api:YOUR_WEBSHARE_KEY@proxy.webshare.io:80',\n  'rotating-residential.brightdata.com:22225'\n];\n\nconst userAgents = [\n  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',\n  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',\n  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'\n];\n\nconst inputData = $input.first().json;\nconst itemIndex = $item(0).$itemIndex || 0;\n\n// Rotate proxy and user agent\nconst selectedProxy = proxies[itemIndex % proxies.length];\nconst selectedUserAgent = userAgents[itemIndex % userAgents.length];\n\n// Build Indeed search URL\nconst jobTitle = encodeURIComponent(inputData.jobTitle);\nconst location = encodeURIComponent(inputData.location);\nconst indeedUrl = `https://www.indeed.com/jobs?q=${jobTitle}&l=${location}&fromage=7`;\n\nreturn [{\n  json: {\n    url: indeedUrl,\n    proxy: selectedProxy,\n    headers: {\n      'User-Agent': selectedUserAgent,\n      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',\n      'Accept-Language': 'en-US,en;q=0.9',\n      'Accept-Encoding': 'gzip, deflate, br',\n      'Connection': 'keep-alive',\n      'Upgrade-Insecure-Requests': '1'\n    },\n    searchParams: inputData,\n    platform: 'indeed'\n  }\n}];"
+      },
+      "id": "node-004",
+      "name": "Indeed - Proxy Setup",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [840, 100],
+      "notes": "Setup proxy rotation for Indeed scraping"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.url }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "={{ $json.headers['User-Agent'] }}"
+            },
+            {
+              "name": "Accept",
+              "value": "={{ $json.headers['Accept'] }}"
+            },
+            {
+              "name": "Accept-Language",
+              "value": "={{ $json.headers['Accept-Language'] }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000,
+          "retry": {
+            "maxTries": 3,
+            "waitBetweenTries": 2000
+          },
+          "response": {
+            "response": {
+              "fullResponse": false,
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "id": "node-005",
+      "name": "Indeed - HTTP Request",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1040, 100],
+      "notes": "Scrape Indeed with retry logic"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse Indeed HTML Response\nconst html = $input.first().json.data || $input.first().json;\nconst searchParams = $node[\"Indeed - Proxy Setup\"].json.searchParams;\n\ntry {\n  // Simple regex-based parsing (in production, use cheerio or proper HTML parser)\n  const jobs = [];\n  \n  // Extract job cards (this is a simplified example)\n  const jobCardRegex = /data-jk=\"([^\"]+)\"[^>]*>.*?<span[^>]*title=\"([^\"]+)\"[^>]*>.*?<span[^>]*company[^>]*>([^<]+)<.*?<div[^>]*location[^>]*>([^<]+)</gs;\n  \n  let match;\n  let count = 0;\n  const maxResults = searchParams.maxResultsPerPlatform || 50;\n  \n  while ((match = jobCardRegex.exec(html)) !== null && count < maxResults) {\n    jobs.push({\n      job_id: `indeed-${match[1]}`,\n      title: match[2]?.trim(),\n      company: match[3]?.trim(),\n      location: match[4]?.trim(),\n      platform: 'indeed',\n      url: `https://www.indeed.com/viewjob?jk=${match[1]}`,\n      scraped_at: new Date().toISOString(),\n      search_query: searchParams.jobTitle,\n      search_location: searchParams.location\n    });\n    count++;\n  }\n  \n  console.log(`Indeed: Parsed ${jobs.length} jobs`);\n  \n  return jobs.map(job => ({ json: job }));\n  \n} catch (error) {\n  console.error('Indeed parsing error:', error.message);\n  return [{\n    json: {\n      error: true,\n      platform: 'indeed',\n      message: error.message,\n      jobs: []\n    }\n  }];\n}"
+      },
+      "id": "node-006",
+      "name": "Indeed - Parse HTML",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1240, 100],
+      "notes": "Extract job data from Indeed HTML"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalize Indeed Data\nconst jobs = $input.all();\nconst normalized = [];\n\nfor (const item of jobs) {\n  const job = item.json;\n  \n  // Skip error items\n  if (job.error) continue;\n  \n  // Standardize field names and structure\n  normalized.push({\n    json: {\n      id: job.job_id,\n      title: job.title,\n      company: job.company,\n      location: job.location,\n      description: job.description || '',\n      salary: job.salary || 'Not specified',\n      job_type: job.job_type || 'Full-time',\n      posted_date: job.posted_date || new Date().toISOString().split('T')[0],\n      url: job.url,\n      platform: 'Indeed',\n      scraped_at: job.scraped_at,\n      search_query: job.search_query,\n      search_location: job.search_location,\n      raw_data: job\n    }\n  });\n}\n\nconsole.log(`Indeed: Normalized ${normalized.length} jobs`);\nreturn normalized.length > 0 ? normalized : [{ json: { platform: 'Indeed', count: 0 } }];"
+      },
+      "id": "node-007",
+      "name": "Indeed - Normalize Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1440, 100],
+      "notes": "Standardize Indeed job data structure"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ZipRecruiter Proxy Setup\nconst proxies = [\n  'http://scraperapi:YOUR_SCRAPERAPI_KEY@proxy-server.scraperapi.com:8001',\n  'http://api:YOUR_WEBSHARE_KEY@proxy.webshare.io:80',\n  'rotating-residential.brightdata.com:22225'\n];\n\nconst userAgents = [\n  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',\n  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',\n  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36'\n];\n\nconst inputData = $input.first().json;\nconst itemIndex = $item(0).$itemIndex || 0;\n\nconst selectedProxy = proxies[(itemIndex + 1) % proxies.length];\nconst selectedUserAgent = userAgents[(itemIndex + 1) % userAgents.length];\n\nconst jobTitle = encodeURIComponent(inputData.jobTitle);\nconst location = encodeURIComponent(inputData.location);\nconst zipRecruiterUrl = `https://www.ziprecruiter.com/jobs-search?search=${jobTitle}&location=${location}`;\n\nreturn [{\n  json: {\n    url: zipRecruiterUrl,\n    proxy: selectedProxy,\n    headers: {\n      'User-Agent': selectedUserAgent,\n      'Accept': 'application/json, text/plain, */*',\n      'Accept-Language': 'en-US,en;q=0.9',\n      'Referer': 'https://www.ziprecruiter.com/'\n    },\n    searchParams: inputData,\n    platform: 'ziprecruiter'\n  }\n}];"
+      },
+      "id": "node-008",
+      "name": "ZipRecruiter - Proxy Setup",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [840, 300],
+      "notes": "Setup proxy rotation for ZipRecruiter"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "={{ $json.headers['User-Agent'] }}"
+            },
+            {
+              "name": "Accept",
+              "value": "={{ $json.headers['Accept'] }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000,
+          "retry": {
+            "maxTries": 3,
+            "waitBetweenTries": 2000
+          }
+        }
+      },
+      "id": "node-009",
+      "name": "ZipRecruiter - HTTP Request",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1040, 300],
+      "notes": "Scrape ZipRecruiter with retry"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse ZipRecruiter Response\nconst response = $input.first().json;\nconst searchParams = $node[\"ZipRecruiter - Proxy Setup\"].json.searchParams;\n\ntry {\n  const jobs = [];\n  const html = response.data || response;\n  \n  // Extract job data (simplified parsing)\n  const jobRegex = /data-job-id=\"([^\"]+)\"[^>]*>.*?<h2[^>]*>([^<]+)<.*?<a[^>]*company[^>]*>([^<]+)<.*?<span[^>]*location[^>]*>([^<]+)</gs;\n  \n  let match;\n  let count = 0;\n  const maxResults = searchParams.maxResultsPerPlatform || 50;\n  \n  while ((match = jobRegex.exec(html)) !== null && count < maxResults) {\n    jobs.push({\n      job_id: `ziprecruiter-${match[1]}`,\n      title: match[2]?.trim(),\n      company: match[3]?.trim(),\n      location: match[4]?.trim(),\n      platform: 'ziprecruiter',\n      url: `https://www.ziprecruiter.com/jobs/${match[1]}`,\n      scraped_at: new Date().toISOString(),\n      search_query: searchParams.jobTitle,\n      search_location: searchParams.location\n    });\n    count++;\n  }\n  \n  console.log(`ZipRecruiter: Parsed ${jobs.length} jobs`);\n  return jobs.map(job => ({ json: job }));\n  \n} catch (error) {\n  console.error('ZipRecruiter parsing error:', error.message);\n  return [{ json: { error: true, platform: 'ziprecruiter', message: error.message } }];\n}"
+      },
+      "id": "node-010",
+      "name": "ZipRecruiter - Parse JSON",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1240, 300],
+      "notes": "Extract job data from ZipRecruiter"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalize ZipRecruiter Data\nconst jobs = $input.all();\nconst normalized = [];\n\nfor (const item of jobs) {\n  const job = item.json;\n  if (job.error) continue;\n  \n  normalized.push({\n    json: {\n      id: job.job_id,\n      title: job.title,\n      company: job.company,\n      location: job.location,\n      description: job.description || '',\n      salary: job.salary || 'Not specified',\n      job_type: job.job_type || 'Full-time',\n      posted_date: job.posted_date || new Date().toISOString().split('T')[0],\n      url: job.url,\n      platform: 'ZipRecruiter',\n      scraped_at: job.scraped_at,\n      search_query: job.search_query,\n      search_location: job.search_location,\n      raw_data: job\n    }\n  });\n}\n\nconsole.log(`ZipRecruiter: Normalized ${normalized.length} jobs`);\nreturn normalized.length > 0 ? normalized : [{ json: { platform: 'ZipRecruiter', count: 0 } }];"
+      },
+      "id": "node-011",
+      "name": "ZipRecruiter - Normalize Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1440, 300],
+      "notes": "Standardize ZipRecruiter data"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Glassdoor Proxy Setup\nconst proxies = [\n  'http://scraperapi:YOUR_SCRAPERAPI_KEY@proxy-server.scraperapi.com:8001',\n  'http://api:YOUR_WEBSHARE_KEY@proxy.webshare.io:80',\n  'rotating-residential.brightdata.com:22225'\n];\n\nconst userAgents = [\n  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',\n  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',\n  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36'\n];\n\nconst inputData = $input.first().json;\nconst itemIndex = $item(0).$itemIndex || 0;\n\nconst selectedProxy = proxies[(itemIndex + 2) % proxies.length];\nconst selectedUserAgent = userAgents[(itemIndex + 2) % userAgents.length];\n\nconst jobTitle = encodeURIComponent(inputData.jobTitle);\nconst location = encodeURIComponent(inputData.location);\nconst glassdoorUrl = `https://www.glassdoor.com/Job/jobs.htm?sc.keyword=${jobTitle}&locT=C&locId=${location}`;\n\nreturn [{\n  json: {\n    url: glassdoorUrl,\n    proxy: selectedProxy,\n    headers: {\n      'User-Agent': selectedUserAgent,\n      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',\n      'Accept-Language': 'en-US,en;q=0.9'\n    },\n    searchParams: inputData,\n    platform: 'glassdoor'\n  }\n}];"
+      },
+      "id": "node-012",
+      "name": "Glassdoor - Proxy Setup",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [840, 500],
+      "notes": "Setup proxy rotation for Glassdoor"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "={{ $json.headers['User-Agent'] }}"
+            },
+            {
+              "name": "Accept",
+              "value": "={{ $json.headers['Accept'] }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000,
+          "retry": {
+            "maxTries": 3,
+            "waitBetweenTries": 2000
+          }
+        }
+      },
+      "id": "node-013",
+      "name": "Glassdoor - HTTP Request",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1040, 500],
+      "notes": "Scrape Glassdoor with retry"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse Glassdoor HTML\nconst html = $input.first().json.data || $input.first().json;\nconst searchParams = $node[\"Glassdoor - Proxy Setup\"].json.searchParams;\n\ntry {\n  const jobs = [];\n  \n  // Extract job listings (simplified)\n  const jobRegex = /data-id=\"(\\d+)\"[^>]*>.*?<a[^>]*job-title[^>]*>([^<]+)<.*?<div[^>]*employer[^>]*>([^<]+)<.*?<span[^>]*loc[^>]*>([^<]+)</gs;\n  \n  let match;\n  let count = 0;\n  const maxResults = searchParams.maxResultsPerPlatform || 50;\n  \n  while ((match = jobRegex.exec(html)) !== null && count < maxResults) {\n    jobs.push({\n      job_id: `glassdoor-${match[1]}`,\n      title: match[2]?.trim(),\n      company: match[3]?.trim(),\n      location: match[4]?.trim(),\n      platform: 'glassdoor',\n      url: `https://www.glassdoor.com/job-listing/${match[1]}`,\n      scraped_at: new Date().toISOString(),\n      search_query: searchParams.jobTitle,\n      search_location: searchParams.location\n    });\n    count++;\n  }\n  \n  console.log(`Glassdoor: Parsed ${jobs.length} jobs`);\n  return jobs.map(job => ({ json: job }));\n  \n} catch (error) {\n  console.error('Glassdoor parsing error:', error.message);\n  return [{ json: { error: true, platform: 'glassdoor', message: error.message } }];\n}"
+      },
+      "id": "node-014",
+      "name": "Glassdoor - Parse HTML",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1240, 500],
+      "notes": "Extract job data from Glassdoor"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalize Glassdoor Data\nconst jobs = $input.all();\nconst normalized = [];\n\nfor (const item of jobs) {\n  const job = item.json;\n  if (job.error) continue;\n  \n  normalized.push({\n    json: {\n      id: job.job_id,\n      title: job.title,\n      company: job.company,\n      location: job.location,\n      description: job.description || '',\n      salary: job.salary || 'Not specified',\n      job_type: job.job_type || 'Full-time',\n      posted_date: job.posted_date || new Date().toISOString().split('T')[0],\n      url: job.url,\n      platform: 'Glassdoor',\n      scraped_at: job.scraped_at,\n      search_query: job.search_query,\n      search_location: job.search_location,\n      raw_data: job\n    }\n  });\n}\n\nconsole.log(`Glassdoor: Normalized ${normalized.length} jobs`);\nreturn normalized.length > 0 ? normalized : [{ json: { platform: 'Glassdoor', count: 0 } }];"
+      },
+      "id": "node-015",
+      "name": "Glassdoor - Normalize Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1440, 500],
+      "notes": "Standardize Glassdoor data"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combinationMode": "mergeByPosition",
+        "options": {}
+      },
+      "id": "node-016",
+      "name": "Merge All Results",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [1640, 300],
+      "notes": "Combine results from all platforms"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Advanced Deduplication Algorithm\nconst items = $input.all();\nconst seen = new Set();\nconst unique = [];\nconst duplicates = [];\n\nfor (const item of items) {\n  const job = item.json;\n  \n  // Skip items without proper structure\n  if (!job.id && !job.title && !job.company) {\n    continue;\n  }\n  \n  // Create composite key for deduplication\n  const jobId = job.id || `${job.company}-${job.title}-${job.location}`.toLowerCase().replace(/\\s+/g, '-');\n  \n  if (!seen.has(jobId)) {\n    seen.add(jobId);\n    unique.push(item);\n  } else {\n    duplicates.push(item);\n  }\n}\n\nconsole.log(`Deduplication: ${items.length} total, ${unique.length} unique, ${duplicates.length} duplicates removed`);\n\nreturn unique.length > 0 ? unique : [{ json: { message: 'No unique jobs found', count: 0 } }];"
+      },
+      "id": "node-017",
+      "name": "Deduplication Logic",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1840, 300],
+      "notes": "Remove duplicate job postings"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": ""
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.title }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            },
+            {
+              "leftValue": "={{ $json.company }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            },
+            {
+              "leftValue": "={{ $json.url }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "node-018",
+      "name": "Data Quality Check",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [2040, 300],
+      "notes": "Filter incomplete job records"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Enrich with Company Data (Clearbit API Integration)\nconst jobs = $input.all();\nconst enriched = [];\n\nfor (const item of jobs) {\n  const job = item.json;\n  \n  // Prepare enrichment data structure\n  const enrichedJob = {\n    ...job,\n    company_data: {\n      domain: job.company ? `${job.company.toLowerCase().replace(/\\s+/g, '')}.com` : '',\n      enriched_at: new Date().toISOString(),\n      // Placeholder for actual Clearbit data\n      // In production, make HTTP request to Clearbit API here\n      status: 'enrichment_ready'\n    }\n  };\n  \n  enriched.push({ json: enrichedJob });\n}\n\nconsole.log(`Enriched ${enriched.length} job records`);\nreturn enriched;"
+      },
+      "id": "node-019",
+      "name": "Enrich Company Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2240, 300],
+      "notes": "Add company information via Clearbit API"
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Jobs",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "id": "={{ $json.id }}",
+            "title": "={{ $json.title }}",
+            "company": "={{ $json.company }}",
+            "location": "={{ $json.location }}",
+            "description": "={{ $json.description }}",
+            "salary": "={{ $json.salary }}",
+            "job_type": "={{ $json.job_type }}",
+            "posted_date": "={{ $json.posted_date }}",
+            "url": "={{ $json.url }}",
+            "platform": "={{ $json.platform }}",
+            "scraped_at": "={{ $json.scraped_at }}",
+            "search_query": "={{ $json.search_query }}",
+            "search_location": "={{ $json.search_location }}"
+          },
+          "matchingColumns": ["id"],
+          "schema": [
+            { "id": "id", "displayName": "ID", "required": false, "defaultMatch": false, "canBeUsedToMatch": true },
+            { "id": "title", "displayName": "Title", "required": false, "defaultMatch": false, "canBeUsedToMatch": false },
+            { "id": "company", "displayName": "Company", "required": false, "defaultMatch": false, "canBeUsedToMatch": false },
+            { "id": "location", "displayName": "Location", "required": false, "defaultMatch": false, "canBeUsedToMatch": false },
+            { "id": "url", "displayName": "URL", "required": false, "defaultMatch": false, "canBeUsedToMatch": false },
+            { "id": "platform", "displayName": "Platform", "required": false, "defaultMatch": false, "canBeUsedToMatch": false },
+            { "id": "scraped_at", "displayName": "Scraped At", "required": false, "defaultMatch": false, "canBeUsedToMatch": false }
+          ]
+        },
+        "options": {
+          "cellFormat": "USER_ENTERED",
+          "useAppend": false
+        }
+      },
+      "id": "node-020",
+      "name": "Append to Google Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [2440, 300],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "YOUR_GOOGLE_SHEETS_CREDENTIAL_ID",
+          "name": "Google Sheets Account"
+        }
+      },
+      "notes": "Save jobs to Google Sheets with upsert"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Prepare Activity Log Entry\nconst jobs = $input.all();\nconst timestamp = new Date().toISOString();\nconst searchParams = $node[\"Search Parameters Input\"].json;\n\n// Calculate statistics\nconst totalJobs = jobs.length;\nconst platformBreakdown = {};\nconst errors = [];\n\nfor (const item of jobs) {\n  const job = item.json;\n  const platform = job.platform || 'Unknown';\n  \n  if (!platformBreakdown[platform]) {\n    platformBreakdown[platform] = 0;\n  }\n  platformBreakdown[platform]++;\n  \n  if (job.error) {\n    errors.push({ platform, message: job.message });\n  }\n}\n\nconst logEntry = {\n  json: {\n    timestamp,\n    workflow: 'Multi-Platform Job Scraper',\n    status: errors.length > totalJobs * 0.2 ? 'Warning' : 'Success',\n    total_jobs: totalJobs,\n    new_jobs: totalJobs, // In production, compare with existing data\n    indeed_count: platformBreakdown['Indeed'] || 0,\n    ziprecruiter_count: platformBreakdown['ZipRecruiter'] || 0,\n    glassdoor_count: platformBreakdown['Glassdoor'] || 0,\n    search_query: searchParams.jobTitle,\n    search_location: searchParams.location,\n    error_count: errors.length,\n    error_details: JSON.stringify(errors),\n    execution_id: searchParams.sessionId\n  }\n};\n\nconsole.log('Activity Log:', logEntry.json);\nreturn [logEntry];"
+      },
+      "id": "node-021",
+      "name": "Prepare Activity Log",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2640, 300],
+      "notes": "Create activity log entry with metrics"
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Activity_Log",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "timestamp": "={{ $json.timestamp }}",
+            "workflow": "={{ $json.workflow }}",
+            "status": "={{ $json.status }}",
+            "total_jobs": "={{ $json.total_jobs }}",
+            "new_jobs": "={{ $json.new_jobs }}",
+            "indeed_count": "={{ $json.indeed_count }}",
+            "ziprecruiter_count": "={{ $json.ziprecruiter_count }}",
+            "glassdoor_count": "={{ $json.glassdoor_count }}",
+            "search_query": "={{ $json.search_query }}",
+            "search_location": "={{ $json.search_location }}",
+            "error_count": "={{ $json.error_count }}",
+            "execution_id": "={{ $json.execution_id }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "node-022",
+      "name": "Log to Activity Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [2840, 300],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "YOUR_GOOGLE_SHEETS_CREDENTIAL_ID",
+          "name": "Google Sheets Account"
+        }
+      },
+      "notes": "Log execution metrics to Activity sheet"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Prepare Slack Alert Message\nconst logData = $input.first().json;\n\nconst statusEmoji = logData.status === 'Success' ? '✅' : '⚠️';\nconst totalJobs = logData.total_jobs || 0;\nconst newJobs = logData.new_jobs || 0;\n\nconst slackMessage = {\n  json: {\n    text: `${statusEmoji} Job Scraper Report`,\n    blocks: [\n      {\n        type: 'header',\n        text: {\n          type: 'plain_text',\n          text: `${statusEmoji} Multi-Platform Job Scraper Report`\n        }\n      },\n      {\n        type: 'section',\n        fields: [\n          { type: 'mrkdwn', text: `*Status:*\\n${logData.status}` },\n          { type: 'mrkdwn', text: `*Total Jobs:*\\n${totalJobs}` },\n          { type: 'mrkdwn', text: `*New Jobs:*\\n${newJobs}` },\n          { type: 'mrkdwn', text: `*Timestamp:*\\n${logData.timestamp}` }\n        ]\n      },\n      {\n        type: 'section',\n        text: {\n          type: 'mrkdwn',\n          text: `*Platform Breakdown:*\\n• Indeed: ${logData.indeed_count}\\n• ZipRecruiter: ${logData.ziprecruiter_count}\\n• Glassdoor: ${logData.glassdoor_count}`\n        }\n      },\n      {\n        type: 'section',\n        fields: [\n          { type: 'mrkdwn', text: `*Search Query:*\\n${logData.search_query}` },\n          { type: 'mrkdwn', text: `*Location:*\\n${logData.search_location}` }\n        ]\n      }\n    ]\n  }\n};\n\nif (logData.error_count > 0) {\n  slackMessage.json.blocks.push({\n    type: 'section',\n    text: {\n      type: 'mrkdwn',\n      text: `*⚠️ Errors:* ${logData.error_count} errors detected`\n    }\n  });\n}\n\nreturn [slackMessage];"
+      },
+      "id": "node-023",
+      "name": "Format Slack Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3040, 300],
+      "notes": "Create formatted Slack notification"
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "post",
+        "channel": "YOUR_SLACK_CHANNEL",
+        "text": "={{ $json.text }}",
+        "otherOptions": {
+          "blocks": "={{ JSON.stringify($json.blocks) }}"
+        }
+      },
+      "id": "node-024",
+      "name": "Send Slack Alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [3240, 300],
+      "credentials": {
+        "slackOAuth2Api": {
+          "id": "YOUR_SLACK_CREDENTIAL_ID",
+          "name": "Slack Account"
+        }
+      },
+      "notes": "Send alert to Slack channel"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": ""
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.error_count }}",
+              "rightValue": "={{ $json.total_jobs * 0.2 }}",
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "node-025",
+      "name": "Error Rate Check",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [3440, 300],
+      "notes": "Check if error rate exceeds 20%"
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "post",
+        "channel": "YOUR_SLACK_CHANNEL",
+        "text": "🚨 *Critical Alert: Job Scraper High Error Rate*\n\nError rate exceeded 20% threshold.\nTotal errors: {{ $json.error_count }}\nTotal jobs: {{ $json.total_jobs }}\n\nPlease review the Activity Log for details.\nExecution ID: {{ $json.execution_id }}",
+        "otherOptions": {}
+      },
+      "id": "node-026",
+      "name": "Send Error Alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [3640, 200],
+      "credentials": {
+        "slackOAuth2Api": {
+          "id": "YOUR_SLACK_CREDENTIAL_ID",
+          "name": "Slack Account"
+        }
+      },
+      "notes": "Alert if failures exceed 20%"
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Search Parameters Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search Parameters Input": {
+      "main": [
+        [
+          {
+            "node": "Split by Platform",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split by Platform": {
+      "main": [
+        [
+          {
+            "node": "Indeed - Proxy Setup",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "ZipRecruiter - Proxy Setup",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Glassdoor - Proxy Setup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Indeed - Proxy Setup": {
+      "main": [
+        [
+          {
+            "node": "Indeed - HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Indeed - HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Indeed - Parse HTML",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Indeed - Parse HTML": {
+      "main": [
+        [
+          {
+            "node": "Indeed - Normalize Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Indeed - Normalize Data": {
+      "main": [
+        [
+          {
+            "node": "Merge All Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ZipRecruiter - Proxy Setup": {
+      "main": [
+        [
+          {
+            "node": "ZipRecruiter - HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ZipRecruiter - HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "ZipRecruiter - Parse JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ZipRecruiter - Parse JSON": {
+      "main": [
+        [
+          {
+            "node": "ZipRecruiter - Normalize Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ZipRecruiter - Normalize Data": {
+      "main": [
+        [
+          {
+            "node": "Merge All Results",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Glassdoor - Proxy Setup": {
+      "main": [
+        [
+          {
+            "node": "Glassdoor - HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Glassdoor - HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Glassdoor - Parse HTML",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Glassdoor - Parse HTML": {
+      "main": [
+        [
+          {
+            "node": "Glassdoor - Normalize Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Glassdoor - Normalize Data": {
+      "main": [
+        [
+          {
+            "node": "Merge All Results",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "Merge All Results": {
+      "main": [
+        [
+          {
+            "node": "Deduplication Logic",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Deduplication Logic": {
+      "main": [
+        [
+          {
+            "node": "Data Quality Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Data Quality Check": {
+      "main": [
+        [
+          {
+            "node": "Enrich Company Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enrich Company Data": {
+      "main": [
+        [
+          {
+            "node": "Append to Google Sheets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append to Google Sheets": {
+      "main": [
+        [
+          {
+            "node": "Prepare Activity Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Activity Log": {
+      "main": [
+        [
+          {
+            "node": "Log to Activity Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log to Activity Sheet": {
+      "main": [
+        [
+          {
+            "node": "Format Slack Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Slack Message": {
+      "main": [
+        [
+          {
+            "node": "Send Slack Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Slack Alert": {
+      "main": [
+        [
+          {
+            "node": "Error Rate Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Error Rate Check": {
+      "main": [
+        [
+          {
+            "node": "Send Error Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 1,
+  "updatedAt": "2025-11-18T00:00:00.000Z",
+  "versionId": "1"
+}
