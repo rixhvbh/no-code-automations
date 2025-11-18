@@ -1,0 +1,21 @@
+{
+  "name": "resume-editor-chatbot",
+  "version": "1.0.0",
+  "description": "WhatsApp chatbot for layout-safe resume editing",
+  "main": "index.js",
+  "scripts": {
+    "test": "node test-resume-editor.js",
+    "dev": "node index.js"
+  },
+  "keywords": ["resume", "automation", "whatsapp", "chatbot", "pdf"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "playwright": "^1.40.1",
+    "pdf-parse": "^1.1.1",
+    "pdf-lib": "^1.17.1",
+    "mammoth": "^1.6.0",
+    "handlebars": "^4.7.8",
+    "express": "^4.18.2"
+  }
+}
