@@ -1,0 +1,281 @@
+{
+  "name": "PropFlow - Multi-Platform Property Scraper",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 4
+            }
+          ]
+        }
+      },
+      "id": "cron-trigger-001",
+      "name": "Every 4 Hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Initialize scraping job\nconst platforms = [\n  { name: 'LoopNet', url: 'loopnet.com', enabled: true, priority: 1 },\n  { name: 'CoStar', url: 'costar.com', enabled: true, priority: 1 },\n  { name: 'Crexi', url: 'crexi.com', enabled: true, priority: 1 },\n  { name: 'County Records', url: 'various', enabled: true, priority: 2 },\n  { name: 'Zillow', url: 'zillow.com', enabled: true, priority: 2 },\n  { name: 'Realtor.com', url: 'realtor.com', enabled: true, priority: 2 },\n  { name: 'Auction.com', url: 'auction.com', enabled: true, priority: 3 }\n];\n\nconst jobId = `scrape-${Date.now()}`;\nconst timestamp = new Date().toISOString();\n\n// Get search configurations\nconst searchConfigs = [\n  { location: 'Austin, TX', radius: 25, propertyTypes: ['multifamily', 'retail', 'office'] },\n  { location: 'Dallas, TX', radius: 30, propertyTypes: ['multifamily', 'industrial'] },\n  { location: 'Houston, TX', radius: 35, propertyTypes: ['multifamily', 'retail'] },\n  { location: 'San Antonio, TX', radius: 20, propertyTypes: ['multifamily', 'office'] }\n];\n\n// Create scraping tasks for each platform and location combination\nconst scrapingTasks = [];\n\nfor (const platform of platforms) {\n  if (!platform.enabled) continue;\n  \n  for (const config of searchConfigs) {\n    for (const propertyType of config.propertyTypes) {\n      scrapingTasks.push({\n        taskId: `${jobId}-${platform.name}-${config.location}-${propertyType}`.replace(/[^a-zA-Z0-9-]/g, '-'),\n        platform: platform.name,\n        platformUrl: platform.url,\n        priority: platform.priority,\n        location: config.location,\n        radius: config.radius,\n        propertyType: propertyType,\n        jobId: jobId,\n        timestamp: timestamp,\n        status: 'pending'\n      });\n    }\n  }\n}\n\n// Sort by priority\nscrapingTasks.sort((a, b) => a.priority - b.priority);\n\nconsole.log(`Created ${scrapingTasks.length} scraping tasks for job ${jobId}`);\n\nreturn scrapingTasks.map(task => ({ json: task }));"
+      },
+      "id": "init-scraping-001",
+      "name": "Initialize Scraping Tasks",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "batchSize": 5,
+        "options": {}
+      },
+      "id": "split-batches-001",
+      "name": "Process in Batches",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Platform-specific scraping logic\nconst task = $input.item.json;\nconst platform = task.platform;\n\n// Simulated scraping with detailed property data\n// In production, this would make actual HTTP requests with rotating proxies\n\ntry {\n  console.log(`Scraping ${platform} for ${task.location} - ${task.propertyType}`);\n  \n  // Simulate API delay\n  const delay = Math.floor(Math.random() * 2000) + 1000;\n  \n  // Generate mock properties (in production, parse from actual HTML/API)\n  const numProperties = Math.floor(Math.random() * 10) + 5;\n  const properties = [];\n  \n  for (let i = 0; i < numProperties; i++) {\n    const propertyId = `${platform}-${Date.now()}-${i}`;\n    \n    properties.push({\n      // Core property data\n      propertyId: propertyId,\n      source: platform,\n      sourceUrl: `https://${task.platformUrl}/listing/${propertyId}`,\n      scrapedAt: new Date().toISOString(),\n      \n      // Location data\n      address: `${Math.floor(Math.random() * 9999) + 1} ${['Main', 'Oak', 'Elm', 'Pine', 'Maple'][i % 5]} St`,\n      city: task.location.split(',')[0],\n      state: 'TX',\n      zipCode: String(Math.floor(Math.random() * 90000) + 10000),\n      latitude: 30.2672 + (Math.random() * 0.5 - 0.25),\n      longitude: -97.7431 + (Math.random() * 0.5 - 0.25),\n      \n      // Property details\n      propertyType: task.propertyType,\n      squareFeet: Math.floor(Math.random() * 50000) + 10000,\n      yearBuilt: Math.floor(Math.random() * 30) + 1990,\n      units: task.propertyType === 'multifamily' ? Math.floor(Math.random() * 200) + 20 : null,\n      \n      // Financial data\n      listPrice: Math.floor(Math.random() * 5000000) + 1000000,\n      pricePerSqFt: null, // Will be calculated\n      estimatedNOI: Math.floor(Math.random() * 400000) + 100000,\n      capRate: null, // Will be calculated\n      \n      // Owner data (if available)\n      ownerName: `${['Smith', 'Johnson', 'Williams', 'Brown', 'Jones'][i % 5]} Properties LLC`,\n      ownerType: 'LLC',\n      \n      // Listing metadata\n      listingDate: new Date(Date.now() - Math.floor(Math.random() * 90) * 24 * 60 * 60 * 1000).toISOString(),\n      daysOnMarket: Math.floor(Math.random() * 90) + 1,\n      status: ['active', 'pending', 'off-market'][Math.floor(Math.random() * 3)],\n      \n      // Processing metadata\n      taskId: task.taskId,\n      jobId: task.jobId,\n      processed: false\n    });\n  }\n  \n  // Calculate derived fields\n  properties.forEach(prop => {\n    prop.pricePerSqFt = Math.round(prop.listPrice / prop.squareFeet);\n    prop.capRate = ((prop.estimatedNOI / prop.listPrice) * 100).toFixed(2);\n  });\n  \n  console.log(`Scraped ${properties.length} properties from ${platform}`);\n  \n  return properties.map(prop => ({ json: prop }));\n  \n} catch (error) {\n  console.error(`Error scraping ${platform}:`, error.message);\n  \n  // Return error item for logging\n  return [{\n    json: {\n      error: true,\n      platform: platform,\n      taskId: task.taskId,\n      errorMessage: error.message,\n      timestamp: new Date().toISOString()\n    }\n  }];\n}"
+      },
+      "id": "platform-scraper-001",
+      "name": "Platform Scraper Engine",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.error }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "check-errors-001",
+      "name": "Check for Errors",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1050, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Log scraping errors to monitoring system\nconst errorData = $input.all().map(item => item.json);\n\nconst errorLog = {\n  timestamp: new Date().toISOString(),\n  workflowName: 'Multi-Platform Property Scraper',\n  errorCount: errorData.length,\n  errors: errorData,\n  severity: 'warning'\n};\n\nconsole.error('Scraping errors detected:', JSON.stringify(errorLog, null, 2));\n\nreturn [{ json: errorLog }];"
+      },
+      "id": "log-errors-001",
+      "name": "Log Scraping Errors",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1250, 200]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Normalize and validate property data\nconst properties = $input.all().map(item => item.json);\n\nconst normalizedProperties = properties.map(prop => {\n  // Address normalization\n  const normalizedAddress = {\n    street: prop.address.trim().toUpperCase(),\n    city: prop.city.trim(),\n    state: prop.state.toUpperCase(),\n    zipCode: prop.zipCode.replace(/[^0-9]/g, '').slice(0, 5),\n    fullAddress: `${prop.address}, ${prop.city}, ${prop.state} ${prop.zipCode}`\n  };\n  \n  // Generate unique identifier\n  const uniqueId = `${normalizedAddress.street}-${normalizedAddress.zipCode}`.replace(/[^a-zA-Z0-9-]/g, '-');\n  \n  // Data validation\n  const isValid = \n    prop.listPrice > 0 &&\n    prop.squareFeet > 0 &&\n    prop.latitude &&\n    prop.longitude &&\n    normalizedAddress.zipCode.length === 5;\n  \n  return {\n    ...prop,\n    uniqueId: uniqueId,\n    normalizedAddress: normalizedAddress,\n    isValid: isValid,\n    normalizedAt: new Date().toISOString()\n  };\n});\n\n// Filter out invalid properties\nconst validProperties = normalizedProperties.filter(p => p.isValid);\nconst invalidCount = normalizedProperties.length - validProperties.length;\n\nif (invalidCount > 0) {\n  console.warn(`Filtered out ${invalidCount} invalid properties`);\n}\n\nconsole.log(`Normalized ${validProperties.length} valid properties`);\n\nreturn validProperties.map(prop => ({ json: prop }));"
+      },
+      "id": "normalize-data-001",
+      "name": "Normalize Property Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1250, 400]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Prepare properties for database storage\nconst properties = $input.all().map(item => item.json);\n\nconst preparedData = {\n  batchId: `batch-${Date.now()}`,\n  timestamp: new Date().toISOString(),\n  count: properties.length,\n  properties: properties,\n  nextStep: 'processing-layer'\n};\n\nconsole.log(`Prepared ${properties.length} properties for storage`);\n\nreturn [{ json: preparedData }];"
+      },
+      "id": "prepare-storage-001",
+      "name": "Prepare for Storage",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1450, 400]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Save to database or queue for next workflow\n// In production, this would write to PostgreSQL or message queue\n\nconst data = $input.first().json;\n\nconsole.log(`[DATABASE WRITE] Saving batch ${data.batchId} with ${data.count} properties`);\n\n// Simulate database write\nconst saved = {\n  success: true,\n  batchId: data.batchId,\n  recordsSaved: data.count,\n  timestamp: new Date().toISOString(),\n  nextWorkflow: 'property-deduplication',\n  message: `Successfully saved ${data.count} properties to database`\n};\n\nreturn [{ json: saved }];"
+      },
+      "id": "save-database-001",
+      "name": "Save to Database",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1650, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.WEBHOOK_URL_PROCESSING_LAYER }}",
+        "options": {
+          "timeout": 30000
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "batchId",
+              "value": "={{ $json.batchId }}"
+            },
+            {
+              "name": "count",
+              "value": "={{ $json.recordsSaved }}"
+            },
+            {
+              "name": "trigger",
+              "value": "scraping-complete"
+            }
+          ]
+        }
+      },
+      "id": "trigger-processing-001",
+      "name": "Trigger Processing Layer",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1850, 400]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Activity logging\nconst result = $input.first().json;\n\nconst activityLog = {\n  timestamp: new Date().toISOString(),\n  workflow: 'Multi-Platform Property Scraper',\n  status: 'completed',\n  batchId: result.batchId,\n  recordsProcessed: result.recordsSaved,\n  message: result.message,\n  nextStep: result.nextWorkflow\n};\n\nconsole.log('Workflow completed:', JSON.stringify(activityLog, null, 2));\n\nreturn [{ json: activityLog }];"
+      },
+      "id": "activity-log-001",
+      "name": "Log Activity",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2050, 400]
+    }
+  ],
+  "connections": {
+    "Every 4 Hours": {
+      "main": [
+        [
+          {
+            "node": "Initialize Scraping Tasks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Initialize Scraping Tasks": {
+      "main": [
+        [
+          {
+            "node": "Process in Batches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process in Batches": {
+      "main": [
+        [
+          {
+            "node": "Platform Scraper Engine",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Platform Scraper Engine": {
+      "main": [
+        [
+          {
+            "node": "Check for Errors",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check for Errors": {
+      "main": [
+        [
+          {
+            "node": "Log Scraping Errors",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize Property Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Property Data": {
+      "main": [
+        [
+          {
+            "node": "Process in Batches",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Prepare for Storage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare for Storage": {
+      "main": [
+        [
+          {
+            "node": "Save to Database",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save to Database": {
+      "main": [
+        [
+          {
+            "node": "Trigger Processing Layer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Trigger Processing Layer": {
+      "main": [
+        [
+          {
+            "node": "Log Activity",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "PropFlow Capital",
+      "id": "propflow-tag-001"
+    },
+    {
+      "name": "Scraping Layer",
+      "id": "scraping-tag-001"
+    }
+  ],
+  "meta": {
+    "instanceId": "propflow-production"
+  }
+}

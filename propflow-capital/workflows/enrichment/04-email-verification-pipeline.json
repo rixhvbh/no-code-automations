@@ -1,0 +1,268 @@
+{
+  "name": "PropFlow - Email Verification Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "email-verification",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-trigger-004",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [250, 400],
+      "webhookId": "propflow-email-verification"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Process incoming email verification request\nconst inputData = $input.first().json;\nconst requestData = inputData.body || inputData;\n\ntry {\n  if (!requestData.batchId) {\n    throw new Error('batchId is required');\n  }\n  \n  let emails = [];\n  \n  if (typeof requestData.emails === 'string') {\n    emails = JSON.parse(requestData.emails);\n  } else if (Array.isArray(requestData.emails)) {\n    emails = requestData.emails;\n  } else {\n    throw new Error('emails must be an array or JSON string');\n  }\n  \n  console.log(`Processing ${emails.length} emails for verification`);\n  \n  return emails.map(email => ({\n    json: {\n      ...email,\n      batchId: requestData.batchId,\n      verificationStatus: 'pending'\n    }\n  }));\n  \n} catch (error) {\n  console.error('Input validation error:', error.message);\n  throw error;\n}"
+      },
+      "id": "process-input-004",
+      "name": "Process Input & Split Emails",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [450, 400]
+    },
+    {
+      "parameters": {
+        "functionCode": "// NeverBounce API verification\nconst emailData = $input.item.json;\nconst email = emailData.email;\n\nconsole.log(`[NeverBounce] Verifying ${email}`);\n\n// Simulate NeverBounce API call\n// In production: POST to https://api.neverbounce.com/v4/single/check\n\nconst results = ['valid', 'invalid', 'disposable', 'catchall', 'unknown'];\nconst result = results[Math.floor(Math.random() * results.length)];\n\n// Weighted towards valid for demo\nconst nbResult = Math.random() > 0.3 ? 'valid' : result;\n\nconst neverBounceResponse = {\n  email: email,\n  result: nbResult,\n  flags: {\n    hasMailServer: nbResult !== 'invalid',\n    hasDNS: nbResult !== 'invalid',\n    freeEmail: email.includes('gmail') || email.includes('yahoo') || email.includes('hotmail'),\n    roleAccount: email.startsWith('info@') || email.startsWith('admin@') || email.startsWith('contact@')\n  },\n  suggestedCorrection: null,\n  executionTime: Math.floor(Math.random() * 500) + 100\n};\n\nif (nbResult === 'invalid' && Math.random() > 0.7) {\n  neverBounceResponse.suggestedCorrection = email.replace('.co', '.com');\n}\n\nreturn [{\n  json: {\n    ...emailData,\n    neverBounce: neverBounceResponse,\n    verificationProgress: 33\n  }\n}];"
+      },
+      "id": "neverbounce-verify-004",
+      "name": "NeverBounce Verification",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [650, 400]
+    },
+    {
+      "parameters": {
+        "amount": 500,
+        "unit": "milliseconds"
+      },
+      "id": "rate-limit-1-004",
+      "name": "Rate Limit Delay",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [850, 400]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Debounce.io API verification\nconst emailData = $input.item.json;\nconst email = emailData.email;\n\nconsole.log(`[Debounce.io] Verifying ${email}`);\n\n// Simulate Debounce.io API call\n// In production: GET to https://api.debounce.io/v1/\n\nconst results = ['Safe', 'Risky', 'Invalid', 'Unknown'];\nconst debounceResult = Math.random() > 0.25 ? 'Safe' : results[Math.floor(Math.random() * results.length)];\n\nconst debounceResponse = {\n  email: email,\n  result: debounceResult,\n  reason: debounceResult === 'Invalid' ? 'Invalid mailbox' : \n          debounceResult === 'Risky' ? 'Potential spam trap' :\n          debounceResult === 'Unknown' ? 'Cannot verify' : 'Valid mailbox',\n  sendAssess: debounceResult === 'Safe' ? 1 : debounceResult === 'Risky' ? 0.5 : 0,\n  spamTrap: debounceResult === 'Risky' && Math.random() > 0.7,\n  complainer: Math.random() > 0.9,\n  syntax: {\n    valid: !debounceResult.includes('Invalid'),\n    username: email.split('@')[0],\n    domain: email.split('@')[1]\n  }\n};\n\nreturn [{\n  json: {\n    ...emailData,\n    debounce: debounceResponse,\n    verificationProgress: 66\n  }\n}];"
+      },
+      "id": "debounce-verify-004",
+      "name": "Debounce.io Verification",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1050, 400]
+    },
+    {
+      "parameters": {
+        "amount": 500,
+        "unit": "milliseconds"
+      },
+      "id": "rate-limit-2-004",
+      "name": "Rate Limit Delay 2",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [1250, 400]
+    },
+    {
+      "parameters": {
+        "functionCode": "// ZeroBounce API verification\nconst emailData = $input.item.json;\nconst email = emailData.email;\n\nconsole.log(`[ZeroBounce] Verifying ${email}`);\n\n// Simulate ZeroBounce API call\n// In production: GET to https://api.zerobounce.net/v2/validate\n\nconst statuses = ['valid', 'invalid', 'catch-all', 'unknown', 'spamtrap', 'abuse', 'do_not_mail'];\nconst zbStatus = Math.random() > 0.25 ? 'valid' : statuses[Math.floor(Math.random() * statuses.length)];\n\nconst zeroBounceResponse = {\n  email: email,\n  status: zbStatus,\n  subStatus: zbStatus === 'invalid' ? 'mailbox_not_found' :\n             zbStatus === 'catch-all' ? 'accept_all' : '',\n  account: email.split('@')[0],\n  domain: email.split('@')[1],\n  didYouMean: null,\n  domainAgeDays: Math.floor(Math.random() * 3650) + 365,\n  freeEmail: email.includes('gmail') || email.includes('yahoo') || email.includes('hotmail'),\n  mxFound: zbStatus !== 'invalid',\n  mxRecord: zbStatus !== 'invalid' ? `mx.${email.split('@')[1]}` : null,\n  smtpProvider: ['Google', 'Microsoft', 'GoDaddy', 'Generic'][Math.floor(Math.random() * 4)],\n  firstname: emailData.personName?.split(' ')[0] || null,\n  lastname: emailData.personName?.split(' ')[1] || null,\n  gender: Math.random() > 0.5 ? 'male' : 'female',\n  country: 'US',\n  region: 'Texas',\n  city: 'Austin',\n  zipcode: null,\n  processedAt: new Date().toISOString()\n};\n\nif (zbStatus === 'invalid' && Math.random() > 0.6) {\n  zeroBounceResponse.didYouMean = email.replace(/\\.(com|net|org)$/, '.com');\n}\n\nreturn [{\n  json: {\n    ...emailData,\n    zeroBounce: zeroBounceResponse,\n    verificationProgress: 100\n  }\n}];"
+      },
+      "id": "zerobounce-verify-004",
+      "name": "ZeroBounce Verification",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1450, 400]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Calculate confidence score from all three services\nconst emailData = $input.item.json;\nconst email = emailData.email;\n\nconst nb = emailData.neverBounce;\nconst db = emailData.debounce;\nconst zb = emailData.zeroBounce;\n\n// Scoring algorithm\nlet validCount = 0;\nlet totalWeight = 0;\nlet confidence = 0;\nconst issues = [];\nconst strengths = [];\n\n// NeverBounce analysis (weight: 35%)\nif (nb.result === 'valid') {\n  validCount++;\n  totalWeight += 35;\n  strengths.push('NeverBounce: Valid');\n} else if (nb.result === 'catchall') {\n  totalWeight += 15;\n  issues.push('Catch-all server detected (NeverBounce)');\n} else if (nb.result === 'invalid') {\n  issues.push('Invalid mailbox (NeverBounce)');\n} else {\n  totalWeight += 10;\n  issues.push('Unknown status (NeverBounce)');\n}\n\n// Debounce.io analysis (weight: 35%)\nif (db.result === 'Safe') {\n  validCount++;\n  totalWeight += 35;\n  strengths.push('Debounce.io: Safe');\n} else if (db.result === 'Risky') {\n  totalWeight += 15;\n  issues.push('Risky email (Debounce.io)');\n  if (db.spamTrap) {\n    issues.push('Potential spam trap');\n    totalWeight -= 10;\n  }\n} else if (db.result === 'Invalid') {\n  issues.push('Invalid email (Debounce.io)');\n} else {\n  totalWeight += 10;\n  issues.push('Unknown status (Debounce.io)');\n}\n\n// ZeroBounce analysis (weight: 30%)\nif (zb.status === 'valid') {\n  validCount++;\n  totalWeight += 30;\n  strengths.push('ZeroBounce: Valid');\n} else if (zb.status === 'catch-all') {\n  totalWeight += 12;\n  issues.push('Catch-all server (ZeroBounce)');\n} else if (zb.status === 'invalid') {\n  issues.push('Invalid mailbox (ZeroBounce)');\n} else if (zb.status === 'spamtrap' || zb.status === 'abuse') {\n  issues.push(`Dangerous: ${zb.status}`);\n  totalWeight -= 20;\n} else {\n  totalWeight += 10;\n  issues.push('Unknown status (ZeroBounce)');\n}\n\n// Additional factors\nif (nb.flags?.freeEmail || zb.freeEmail) {\n  issues.push('Free email provider');\n  totalWeight -= 5;\n}\n\nif (nb.flags?.roleAccount) {\n  issues.push('Role-based email (info@, admin@, etc.)');\n  totalWeight -= 10;\n}\n\nif (zb.mxFound && nb.flags?.hasMailServer) {\n  strengths.push('Valid MX records');\n  totalWeight += 5;\n}\n\n// Final confidence calculation\nconfidence = Math.max(0, Math.min(100, totalWeight));\n\n// Determine verification result\nlet finalStatus = 'invalid';\nlet deliverabilityScore = 0;\n\nif (confidence >= 90 && validCount >= 2) {\n  finalStatus = 'verified';\n  deliverabilityScore = 95;\n} else if (confidence >= 70 && validCount >= 2) {\n  finalStatus = 'verified';\n  deliverabilityScore = 85;\n} else if (confidence >= 50 && validCount >= 1) {\n  finalStatus = 'likely_valid';\n  deliverabilityScore = 70;\n} else if (confidence >= 35) {\n  finalStatus = 'risky';\n  deliverabilityScore = 40;\n} else {\n  finalStatus = 'invalid';\n  deliverabilityScore = 10;\n}\n\n// Special case: catch-all servers\nif (nb.result === 'catchall' || zb.status === 'catch-all') {\n  finalStatus = 'catch-all';\n  deliverabilityScore = Math.min(deliverabilityScore, 50);\n}\n\n// Compile final result\nconst verificationResult = {\n  email: email,\n  status: finalStatus,\n  confidence: confidence,\n  deliverabilityScore: deliverabilityScore,\n  validCount: validCount,\n  totalChecks: 3,\n  issues: issues,\n  strengths: strengths,\n  recommendations: generateRecommendations(finalStatus, issues),\n  verifiedAt: new Date().toISOString(),\n  \n  // Source data\n  neverBounce: nb,\n  debounce: db,\n  zeroBounce: zb\n};\n\nfunction generateRecommendations(status, issues) {\n  const recs = [];\n  \n  if (status === 'verified') {\n    recs.push('Safe to send - high deliverability');\n  } else if (status === 'likely_valid') {\n    recs.push('Proceed with caution - monitor bounce rates');\n  } else if (status === 'catch-all') {\n    recs.push('Test send recommended - cannot guarantee delivery');\n  } else if (status === 'risky') {\n    recs.push('High risk - consider alternative contact methods');\n  } else {\n    recs.push('Do not send - email is invalid');\n  }\n  \n  if (issues.some(i => i.includes('spam trap'))) {\n    recs.push('WARNING: Remove immediately to protect sender reputation');\n  }\n  \n  if (issues.some(i => i.includes('role-based'))) {\n    recs.push('Consider finding direct decision-maker email');\n  }\n  \n  return recs;\n}\n\nconsole.log(`Verification complete: ${email} = ${finalStatus} (${confidence}% confidence)`);\n\nreturn [{\n  json: {\n    ...emailData,\n    verificationResult: verificationResult\n  }\n}];"
+      },
+      "id": "calculate-confidence-004",
+      "name": "Calculate Confidence Score",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1650, 400]
+    },
+    {
+      "parameters": {},
+      "id": "aggregate-results-004",
+      "name": "Aggregate All Verifications",
+      "type": "n8n-nodes-base.aggregate",
+      "typeVersion": 1,
+      "position": [1850, 400]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Compile batch results\nconst allResults = $input.all().map(item => item.json);\n\nconst batchId = allResults[0]?.batchId || 'unknown';\n\n// Statistics\nconst stats = {\n  total: allResults.length,\n  verified: allResults.filter(r => r.verificationResult.status === 'verified').length,\n  likelyValid: allResults.filter(r => r.verificationResult.status === 'likely_valid').length,\n  catchAll: allResults.filter(r => r.verificationResult.status === 'catch-all').length,\n  risky: allResults.filter(r => r.verificationResult.status === 'risky').length,\n  invalid: allResults.filter(r => r.verificationResult.status === 'invalid').length,\n  avgConfidence: (allResults.reduce((sum, r) => sum + r.verificationResult.confidence, 0) / allResults.length).toFixed(2),\n  avgDeliverability: (allResults.reduce((sum, r) => sum + r.verificationResult.deliverabilityScore, 0) / allResults.length).toFixed(2)\n};\n\nconst batchResult = {\n  batchId: batchId,\n  timestamp: new Date().toISOString(),\n  statistics: stats,\n  results: allResults.map(r => ({\n    propertyId: r.propertyId,\n    email: r.email,\n    status: r.verificationResult.status,\n    confidence: r.verificationResult.confidence,\n    deliverabilityScore: r.verificationResult.deliverabilityScore,\n    issues: r.verificationResult.issues,\n    recommendations: r.verificationResult.recommendations\n  })),\n  success: true,\n  message: `Verified ${stats.total} emails. ${stats.verified} verified, ${stats.invalid} invalid.`\n};\n\nconsole.log('Batch verification complete:', batchResult.message);\n\nreturn [{ json: batchResult }];"
+      },
+      "id": "compile-results-004",
+      "name": "Compile Batch Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2050, 400]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Save verification results to database\nconst batchResult = $input.first().json;\n\nconsole.log(`[DATABASE] Saving verification results for batch ${batchResult.batchId}`);\n\n// In production, update database with verified emails\n\nconst saveResult = {\n  success: true,\n  batchId: batchResult.batchId,\n  recordsUpdated: batchResult.statistics.total,\n  verifiedEmails: batchResult.statistics.verified,\n  timestamp: new Date().toISOString(),\n  message: 'Email verification results saved successfully'\n};\n\nreturn [{ json: saveResult }];"
+      },
+      "id": "save-results-004",
+      "name": "Save Verification Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2250, 400]
+    },
+    {
+      "parameters": {
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "respond-webhook-004",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [2450, 400]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Process Input & Split Emails",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Input & Split Emails": {
+      "main": [
+        [
+          {
+            "node": "NeverBounce Verification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "NeverBounce Verification": {
+      "main": [
+        [
+          {
+            "node": "Rate Limit Delay",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rate Limit Delay": {
+      "main": [
+        [
+          {
+            "node": "Debounce.io Verification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Debounce.io Verification": {
+      "main": [
+        [
+          {
+            "node": "Rate Limit Delay 2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rate Limit Delay 2": {
+      "main": [
+        [
+          {
+            "node": "ZeroBounce Verification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ZeroBounce Verification": {
+      "main": [
+        [
+          {
+            "node": "Calculate Confidence Score",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Confidence Score": {
+      "main": [
+        [
+          {
+            "node": "Aggregate All Verifications",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate All Verifications": {
+      "main": [
+        [
+          {
+            "node": "Compile Batch Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compile Batch Results": {
+      "main": [
+        [
+          {
+            "node": "Save Verification Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Verification Results": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "PropFlow Capital",
+      "id": "propflow-tag-001"
+    },
+    {
+      "name": "Enrichment Layer",
+      "id": "enrichment-tag-001"
+    }
+  ]
+}

@@ -1,0 +1,177 @@
+{
+  "name": "PropFlow - CRM Sync Workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 2
+            }
+          ]
+        }
+      },
+      "id": "cron-trigger-007",
+      "name": "Every 2 Hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [250, 500]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Fetch deals pending CRM sync\nconsole.log('Fetching deals for CRM sync');\n\n// In production, fetch from database where crm_synced = false\n// For demo, generate sample deals\nconst deals = [];\n\nfor (let i = 0; i < 15; i++) {\n  deals.push({\n    propertyId: `prop-${Date.now()}-${i}`,\n    address: `${1000 + i} Main St`,\n    city: ['Austin', 'Dallas', 'Houston'][i % 3],\n    state: 'TX',\n    zipCode: String(78701 + i),\n    listPrice: Math.floor(Math.random() * 4000000) + 1000000,\n    propertyType: ['multifamily', 'retail', 'office'][i % 3],\n    squareFeet: Math.floor(Math.random() * 40000) + 10000,\n    dealScore: Math.floor(Math.random() * 30) + 70,\n    dealTier: ['S', 'A', 'B'][i % 3],\n    capRate: (Math.random() * 3 + 6).toFixed(2),\n    irr: (Math.random() * 8 + 12).toFixed(2),\n    ownerName: `Owner ${i} LLC`,\n    ownerEmail: `owner${i}@example.com`,\n    ownerPhone: `+1-512-555-${String(i).padStart(4, '0')}`,\n    recommendation: ['STRONG BUY', 'BUY', 'CONSIDER'][i % 3],\n    scoredAt: new Date().toISOString()\n  });\n}\n\nreturn deals.map(deal => ({ json: deal }));"
+      },
+      "id": "fetch-deals-007",
+      "name": "Fetch Deals for Sync",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [450, 500]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Format deal for Airtable\nconst deal = $input.item.json;\n\n// Airtable record structure\nconst airtableRecord = {\n  fields: {\n    'Property ID': deal.propertyId,\n    'Address': deal.address,\n    'City': deal.city,\n    'State': deal.state,\n    'Zip Code': deal.zipCode,\n    'Full Address': `${deal.address}, ${deal.city}, ${deal.state} ${deal.zipCode}`,\n    \n    // Financial fields\n    'List Price': deal.listPrice,\n    'Cap Rate': parseFloat(deal.capRate),\n    'Projected IRR': parseFloat(deal.irr),\n    'Price per SF': Math.round(deal.listPrice / deal.squareFeet),\n    \n    // Property details\n    'Property Type': deal.propertyType,\n    'Square Feet': deal.squareFeet,\n    \n    // Deal scoring\n    'Deal Score': deal.dealScore,\n    'Deal Tier': deal.dealTier,\n    'Recommendation': deal.recommendation,\n    \n    // Owner information\n    'Owner Name': deal.ownerName,\n    'Owner Email': deal.ownerEmail,\n    'Owner Phone': deal.ownerPhone,\n    \n    // Status fields\n    'Status': 'New',\n    'Stage': 'Lead',\n    'Assigned To': deal.dealScore >= 85 ? 'Managing Partner' : 'Analyst',\n    \n    // Timestamps\n    'Created': deal.scoredAt,\n    'Last Updated': new Date().toISOString(),\n    \n    // Metadata\n    'Source': 'PropFlow Engine',\n    'Sync Date': new Date().toISOString()\n  }\n};\n\nreturn [{\n  json: {\n    deal: deal,\n    airtableRecord: airtableRecord\n  }\n}];"
+      },
+      "id": "format-airtable-007",
+      "name": "Format for Airtable",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [650, 400]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Simulate Airtable upsert operation\nconst data = $input.item.json;\nconst deal = data.deal;\nconst record = data.airtableRecord;\n\nconsole.log(`[AIRTABLE] Upserting ${deal.propertyId}`);\n\n// In production: Call Airtable API\n// Check if record exists, update or create\n\n// Simulated response\nconst existingRecord = Math.random() > 0.7; // 30% chance record exists\n\nconst airtableResponse = {\n  id: `rec${Math.random().toString(36).substr(2, 14)}`,\n  createdTime: existingRecord ? new Date(Date.now() - 86400000).toISOString() : new Date().toISOString(),\n  fields: record.fields,\n  operation: existingRecord ? 'updated' : 'created'\n};\n\nreturn [{\n  json: {\n    deal: deal,\n    airtableResponse: airtableResponse,\n    synced: true\n  }\n}];"
+      },
+      "id": "sync-airtable-007",
+      "name": "Sync to Airtable",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [850, 400]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Format deal for Google Sheets\nconst deal = $input.item.json.deal;\n\n// Google Sheets row format (matches column headers)\nconst sheetRow = [\n  deal.propertyId,\n  new Date(deal.scoredAt).toLocaleDateString(),\n  deal.dealScore,\n  deal.dealTier,\n  deal.propertyType,\n  deal.address,\n  deal.city,\n  deal.state,\n  deal.zipCode,\n  deal.listPrice,\n  parseFloat(deal.capRate),\n  parseFloat(deal.irr),\n  deal.squareFeet,\n  Math.round(deal.listPrice / deal.squareFeet),\n  deal.ownerName,\n  deal.ownerEmail,\n  deal.ownerPhone,\n  deal.recommendation,\n  'New',\n  new Date().toISOString()\n];\n\nreturn [{\n  json: {\n    deal: deal,\n    sheetRow: sheetRow,\n    spreadsheetId: process.env.GOOGLE_SHEETS_DEALS_ID || 'demo-spreadsheet-id',\n    sheetName: 'Active Deals'\n  }\n}];"
+      },
+      "id": "format-sheets-007",
+      "name": "Format for Google Sheets",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [650, 600]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Simulate Google Sheets append operation\nconst data = $input.item.json;\n\nconsole.log(`[GOOGLE SHEETS] Appending row for ${data.deal.propertyId}`);\n\n// In production: Call Google Sheets API\n// POST to https://sheets.googleapis.com/v4/spreadsheets/{spreadsheetId}/values/{range}:append\n\nconst sheetsResponse = {\n  spreadsheetId: data.spreadsheetId,\n  tableRange: `${data.sheetName}!A1:T1000`,\n  updates: {\n    spreadsheetId: data.spreadsheetId,\n    updatedRange: `${data.sheetName}!A${Math.floor(Math.random() * 100) + 2}:T${Math.floor(Math.random() * 100) + 2}`,\n    updatedRows: 1,\n    updatedColumns: 20,\n    updatedCells: 20\n  }\n};\n\nreturn [{\n  json: {\n    deal: data.deal,\n    sheetsResponse: sheetsResponse,\n    synced: true\n  }\n}];"
+      },
+      "id": "sync-sheets-007",
+      "name": "Sync to Google Sheets",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [850, 600]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Create owner contact record\nconst deal = $input.item.json.deal;\n\nconst ownerRecord = {\n  fields: {\n    'Contact ID': `contact-${deal.propertyId}`,\n    'Name': deal.ownerName,\n    'Email': deal.ownerEmail,\n    'Phone': deal.ownerPhone,\n    'Type': 'Property Owner',\n    'Properties Owned': [deal.propertyId], // Link to property record\n    'First Contact Date': new Date().toISOString(),\n    'Contact Quality': deal.ownerEmail ? 'High' : 'Medium',\n    'Status': 'Active',\n    'Source': 'PropFlow Engine',\n    'Created': new Date().toISOString()\n  }\n};\n\nreturn [{\n  json: {\n    deal: deal,\n    ownerRecord: ownerRecord\n  }\n}];"
+      },
+      "id": "create-contact-007",
+      "name": "Create Owner Contact",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [650, 800]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Sync owner contact to Airtable Contacts table\nconst data = $input.item.json;\n\nconsole.log(`[AIRTABLE CONTACTS] Upserting ${data.ownerRecord.fields.Name}`);\n\n// In production: Call Airtable API for Contacts base\n\nconst contactResponse = {\n  id: `rec${Math.random().toString(36).substr(2, 14)}`,\n  createdTime: new Date().toISOString(),\n  fields: data.ownerRecord.fields,\n  operation: Math.random() > 0.5 ? 'updated' : 'created'\n};\n\nreturn [{\n  json: {\n    deal: data.deal,\n    contactResponse: contactResponse,\n    synced: true\n  }\n}];"
+      },
+      "id": "sync-contacts-007",
+      "name": "Sync to Contacts Table",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [850, 800]
+    },
+    {
+      "parameters": {},
+      "id": "aggregate-sync-007",
+      "name": "Aggregate Sync Results",
+      "type": "n8n-nodes-base.aggregate",
+      "typeVersion": 1,
+      "position": [1050, 600]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Update database sync status\nconst allResults = $input.all();\n\nconst syncSummary = {\n  totalDeals: allResults.length / 3, // Each deal has 3 sync operations\n  airtableDeals: allResults.filter(r => r.json.airtableResponse).length,\n  googleSheets: allResults.filter(r => r.json.sheetsResponse).length,\n  contacts: allResults.filter(r => r.json.contactResponse).length,\n  timestamp: new Date().toISOString(),\n  success: true\n};\n\nconsole.log('[DATABASE] Updating sync status:', syncSummary);\n\n// In production: Update database records with crm_synced = true\n\nreturn [{ json: syncSummary }];"
+      },
+      "id": "update-status-007",
+      "name": "Update Sync Status",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1250, 600]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Generate dashboard update\nconst summary = $input.first().json;\n\nconst dashboardUpdate = {\n  type: 'crm_sync_complete',\n  timestamp: new Date().toISOString(),\n  metrics: {\n    dealsSynced: summary.totalDeals,\n    airtableUpdates: summary.airtableDeals,\n    sheetsUpdates: summary.googleSheets,\n    contactsCreated: summary.contacts\n  },\n  message: `CRM sync complete: ${summary.totalDeals} deals synced to Airtable and Google Sheets`,\n  nextSync: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString() // Next sync in 2 hours\n};\n\nconsole.log('Dashboard update prepared:', dashboardUpdate);\n\nreturn [{ json: dashboardUpdate }];"
+      },
+      "id": "dashboard-update-007",
+      "name": "Prepare Dashboard Update",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1450, 600]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Activity logging\nconst update = $input.first().json;\n\nconst activityLog = {\n  timestamp: new Date().toISOString(),\n  workflow: 'CRM Sync Workflow',\n  status: 'completed',\n  metrics: update.metrics,\n  message: update.message\n};\n\nconsole.log('Workflow completed:', JSON.stringify(activityLog, null, 2));\n\nreturn [{ json: activityLog }];"
+      },
+      "id": "log-activity-007",
+      "name": "Log Activity",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1650, 600]
+    }
+  ],
+  "connections": {
+    "Every 2 Hours": {
+      "main": [[{"node": "Fetch Deals for Sync", "type": "main", "index": 0}]]
+    },
+    "Fetch Deals for Sync": {
+      "main": [[
+        {"node": "Format for Airtable", "type": "main", "index": 0},
+        {"node": "Format for Google Sheets", "type": "main", "index": 0},
+        {"node": "Create Owner Contact", "type": "main", "index": 0}
+      ]]
+    },
+    "Format for Airtable": {
+      "main": [[{"node": "Sync to Airtable", "type": "main", "index": 0}]]
+    },
+    "Sync to Airtable": {
+      "main": [[{"node": "Aggregate Sync Results", "type": "main", "index": 0}]]
+    },
+    "Format for Google Sheets": {
+      "main": [[{"node": "Sync to Google Sheets", "type": "main", "index": 0}]]
+    },
+    "Sync to Google Sheets": {
+      "main": [[{"node": "Aggregate Sync Results", "type": "main", "index": 0}]]
+    },
+    "Create Owner Contact": {
+      "main": [[{"node": "Sync to Contacts Table", "type": "main", "index": 0}]]
+    },
+    "Sync to Contacts Table": {
+      "main": [[{"node": "Aggregate Sync Results", "type": "main", "index": 0}]]
+    },
+    "Aggregate Sync Results": {
+      "main": [[{"node": "Update Sync Status", "type": "main", "index": 0}]]
+    },
+    "Update Sync Status": {
+      "main": [[{"node": "Prepare Dashboard Update", "type": "main", "index": 0}]]
+    },
+    "Prepare Dashboard Update": {
+      "main": [[{"node": "Log Activity", "type": "main", "index": 0}]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [
+    {"name": "PropFlow Capital", "id": "propflow-tag-001"},
+    {"name": "Delivery Layer", "id": "delivery-tag-001"}
+  ]
+}

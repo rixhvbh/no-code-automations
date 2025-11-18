@@ -1,0 +1,200 @@
+{
+  "workflowConfiguration": {
+    "propflow_capital": {
+      "version": "1.0.0",
+      "description": "Real Estate Investment Deal Flow Engine",
+      "client": "PropFlow Capital",
+      "workflows": [
+        {
+          "id": "01-multi-platform-property-scraper",
+          "name": "Multi-Platform Property Scraper",
+          "layer": "scraping",
+          "schedule": "every 4 hours",
+          "enabled": true,
+          "priority": 1,
+          "dependencies": [],
+          "triggers": ["property-deduplication"],
+          "platforms": [
+            {
+              "name": "LoopNet",
+              "enabled": true,
+              "searchLocations": ["Austin, TX", "Dallas, TX", "Houston, TX", "San Antonio, TX"],
+              "propertyTypes": ["multifamily", "retail", "office"]
+            },
+            {
+              "name": "CoStar",
+              "enabled": true,
+              "searchLocations": ["Austin, TX", "Dallas, TX", "Houston, TX"],
+              "propertyTypes": ["multifamily", "industrial"]
+            },
+            {
+              "name": "Crexi",
+              "enabled": true,
+              "searchLocations": ["Austin, TX", "Dallas, TX", "Houston, TX", "San Antonio, TX"],
+              "propertyTypes": ["multifamily", "retail", "office"]
+            },
+            {
+              "name": "County Records",
+              "enabled": true,
+              "counties": ["Travis", "Dallas", "Harris", "Bexar"]
+            },
+            {
+              "name": "Zillow",
+              "enabled": true,
+              "searchLocations": ["Austin, TX", "Dallas, TX", "Houston, TX"]
+            },
+            {
+              "name": "Auction.com",
+              "enabled": true,
+              "searchLocations": ["Austin, TX", "Dallas, TX", "Houston, TX", "San Antonio, TX"]
+            }
+          ]
+        },
+        {
+          "id": "02-property-deduplication-engine",
+          "name": "Property Deduplication Engine",
+          "layer": "processing",
+          "trigger": "webhook",
+          "enabled": true,
+          "priority": 2,
+          "dependencies": ["01-multi-platform-property-scraper"],
+          "triggers": ["owner-contact-discovery", "deal-scoring"],
+          "config": {
+            "deduplicationMethod": "multi-factor",
+            "confidenceThreshold": 70,
+            "enableEntityResolution": true,
+            "enableFinancialModeling": true,
+            "enableMarketComparables": true
+          }
+        },
+        {
+          "id": "03-owner-contact-discovery",
+          "name": "Owner Contact Discovery Chain",
+          "layer": "enrichment",
+          "trigger": "webhook",
+          "enabled": true,
+          "priority": 3,
+          "dependencies": ["02-property-deduplication-engine"],
+          "triggers": ["email-verification"],
+          "config": {
+            "enableDomainDiscovery": true,
+            "enableEmailPatterns": true,
+            "enablePhoneLookup": true,
+            "enableLinkedInEnrichment": true,
+            "enableDnBLookup": true,
+            "minContactQuality": 40
+          }
+        },
+        {
+          "id": "04-email-verification-pipeline",
+          "name": "Email Verification Pipeline",
+          "layer": "enrichment",
+          "trigger": "webhook",
+          "enabled": true,
+          "priority": 4,
+          "dependencies": ["03-owner-contact-discovery"],
+          "config": {
+            "verificationServices": ["NeverBounce", "Debounce.io", "ZeroBounce"],
+            "batchSize": 100,
+            "batchDelayMs": 3600000,
+            "minConfidenceScore": 70,
+            "rateLimitDelayMs": 500
+          }
+        },
+        {
+          "id": "05-deal-scoring-engine",
+          "name": "Deal Scoring Engine",
+          "layer": "orchestration",
+          "trigger": "webhook",
+          "enabled": true,
+          "priority": 5,
+          "dependencies": ["02-property-deduplication-engine", "04-email-verification-pipeline"],
+          "triggers": ["alert-distribution", "crm-sync"],
+          "config": {
+            "scoringWeights": {
+              "financial": 35,
+              "location": 25,
+              "motivation": 20,
+              "contact": 10,
+              "timing": 10
+            },
+            "enableGPTAnalysis": true,
+            "gptModel": "gpt-4-turbo-preview",
+            "tierThresholds": {
+              "S": 85,
+              "A": 75,
+              "B": 65,
+              "C": 50,
+              "D": 0
+            }
+          }
+        },
+        {
+          "id": "06-alert-distribution-system",
+          "name": "Alert Distribution System",
+          "layer": "delivery",
+          "trigger": "webhook",
+          "enabled": true,
+          "priority": 6,
+          "dependencies": ["05-deal-scoring-engine"],
+          "config": {
+            "urgentThreshold": 85,
+            "highPriorityThreshold": 75,
+            "channels": {
+              "sms": {
+                "enabled": true,
+                "recipients": [
+                  {"name": "John Partner", "phone": "+1-512-555-0001", "role": "Managing Partner"},
+                  {"name": "Sarah Investor", "phone": "+1-512-555-0002", "role": "Investment Director"}
+                ]
+              },
+              "email": {
+                "enabled": true,
+                "recipients": ["team@propflowcapital.com", "acquisitions@propflowcapital.com"]
+              },
+              "slack": {
+                "enabled": true,
+                "channel": "#deal-alerts"
+              },
+              "zapier": {
+                "enabled": true
+              }
+            }
+          }
+        },
+        {
+          "id": "07-crm-sync-workflow",
+          "name": "CRM Sync Workflow",
+          "layer": "delivery",
+          "schedule": "every 2 hours",
+          "enabled": true,
+          "priority": 7,
+          "dependencies": ["05-deal-scoring-engine"],
+          "config": {
+            "platforms": {
+              "airtable": {
+                "enabled": true,
+                "bases": ["Properties", "Contacts", "Deals"],
+                "upsertLogic": true
+              },
+              "googleSheets": {
+                "enabled": true,
+                "sheets": ["Active Deals", "Deal Pipeline", "Analytics"]
+              }
+            },
+            "syncInterval": "2 hours",
+            "enableDeduplication": true
+          }
+        }
+      ],
+      "globalSettings": {
+        "timezone": "America/Chicago",
+        "errorRetryAttempts": 3,
+        "errorRetryDelayMs": 5000,
+        "enableActivityLogging": true,
+        "enablePerformanceMetrics": true,
+        "maxExecutionTimeMinutes": 60
+      }
+    }
+  }
+}

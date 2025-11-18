@@ -1,0 +1,211 @@
+{
+  "name": "PropFlow - Alert Distribution System",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "alert-distribution",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-trigger-006",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [250, 500],
+      "webhookId": "propflow-alerts"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Process alert trigger\nconst inputData = $input.first().json;\nconst requestData = inputData.body || inputData;\n\ntry {\n  let topDeals = [];\n  \n  if (typeof requestData.topDeals === 'string') {\n    topDeals = JSON.parse(requestData.topDeals);\n  } else if (Array.isArray(requestData.topDeals)) {\n    topDeals = requestData.topDeals;\n  }\n  \n  console.log(`Processing alerts for ${topDeals.length} top deals`);\n  \n  // Filter deals by urgency\n  const urgentDeals = topDeals.filter(d => d.finalScore >= 85); // S-tier\n  const highPriority = topDeals.filter(d => d.finalScore >= 75 && d.finalScore < 85); // A-tier\n  \n  return [{\n    json: {\n      urgentDeals: urgentDeals,\n      highPriority: highPriority,\n      totalDeals: topDeals.length,\n      timestamp: new Date().toISOString()\n    }\n  }];\n  \n} catch (error) {\n  console.error('Alert processing error:', error.message);\n  throw error;\n}"
+      },
+      "id": "process-alerts-006",
+      "name": "Process Alert Triggers",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [450, 500]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{ $json.urgentDeals.length }}",
+              "operation": "larger",
+              "value2": 0
+            }
+          ]
+        }
+      },
+      "id": "check-urgent-006",
+      "name": "Check for Urgent Deals",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [650, 500]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Format SMS messages for urgent deals\nconst data = $input.first().json;\nconst urgentDeals = data.urgentDeals;\n\n// Create individual SMS for each partner\nconst partners = [\n  { name: 'John Partner', phone: '+1-512-555-0001', role: 'Managing Partner' },\n  { name: 'Sarah Investor', phone: '+1-512-555-0002', role: 'Investment Director' },\n  { name: 'Mike Analyst', phone: '+1-512-555-0003', role: 'Senior Analyst' }\n];\n\nconst smsMessages = [];\n\npartners.forEach(partner => {\n  urgentDeals.forEach(deal => {\n    const message = `🔥 HOT DEAL ALERT (Score: ${deal.finalScore}/100)\\n\\n` +\n      `📍 ${deal.address}, ${deal.city}\\n` +\n      `💰 ${(deal.listPrice / 1000000).toFixed(2)}M | ` +\n      `Cap: ${deal.propertyData.financialModel.capRate}% | ` +\n      `IRR: ${deal.propertyData.financialModel.projectedIRR}%\\n` +\n      `🏢 ${deal.propertyType.toUpperCase()}\\n\\n` +\n      `✨ Tier: ${deal.dealTier} - ${deal.tierDescription}\\n` +\n      `⚡ ${deal.action}\\n\\n` +\n      `📊 View Details: https://propflow.app/deals/${deal.propertyId}`;\n    \n    smsMessages.push({\n      to: partner.phone,\n      partnerName: partner.name,\n      message: message,\n      dealId: deal.propertyId,\n      dealScore: deal.finalScore,\n      priority: 'urgent'\n    });\n  });\n});\n\nconsole.log(`Created ${smsMessages.length} urgent SMS alerts`);\n\nreturn smsMessages.map(sms => ({ json: sms }));"
+      },
+      "id": "format-sms-006",
+      "name": "Format SMS Alerts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [850, 400]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Simulate Twilio API call to send SMS\nconst sms = $input.item.json;\n\nconsole.log(`[TWILIO] Sending SMS to ${sms.partnerName} (${sms.to})`);\n\n// In production: Call Twilio API\n// POST to https://api.twilio.com/2010-04-01/Accounts/{AccountSid}/Messages.json\n\nconst twilioResponse = {\n  sid: `SM${Math.random().toString(36).substr(2, 32)}`,\n  status: 'sent',\n  to: sms.to,\n  from: '+1-512-555-9999', // PropFlow Capital number\n  body: sms.message,\n  dateSent: new Date().toISOString(),\n  price: '-0.0075',\n  priceUnit: 'USD'\n};\n\nreturn [{\n  json: {\n    ...sms,\n    twilioResponse: twilioResponse,\n    sent: true,\n    sentAt: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "send-sms-006",
+      "name": "Send Twilio SMS",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1050, 400]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Format email alerts for high-priority deals\nconst data = $input.first().json;\nconst allDeals = [...(data.urgentDeals || []), ...(data.highPriority || [])];\n\n// Create comprehensive email\nconst emailRecipients = [\n  { name: 'Investment Team', email: 'team@propflowcapital.com' },\n  { name: 'Acquisitions', email: 'acquisitions@propflowcapital.com' }\n];\n\nconst emails = [];\n\nemailRecipients.forEach(recipient => {\n  // HTML email body\n  const htmlBody = `\n    <!DOCTYPE html>\n    <html>\n    <head>\n      <style>\n        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }\n        .header { background: #2c3e50; color: white; padding: 20px; text-align: center; }\n        .deal-card { border: 2px solid #3498db; border-radius: 8px; padding: 20px; margin: 20px 0; }\n        .deal-card.urgent { border-color: #e74c3c; background: #ffe6e6; }\n        .score { font-size: 48px; font-weight: bold; color: #2c3e50; }\n        .tier-S { color: #e74c3c; }\n        .tier-A { color: #3498db; }\n        .metrics { display: flex; justify-content: space-around; margin: 15px 0; }\n        .metric { text-align: center; }\n        .metric-value { font-size: 24px; font-weight: bold; color: #27ae60; }\n        .action-btn { background: #e74c3c; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; display: inline-block; margin: 10px 0; }\n      </style>\n    </head>\n    <body>\n      <div class=\"header\">\n        <h1>🏢 PropFlow Capital - Hot Deal Alert</h1>\n        <p>${new Date().toLocaleDateString()} | ${allDeals.length} High-Priority Deals</p>\n      </div>\n      \n      ${allDeals.map((deal, index) => `\n        <div class=\"deal-card ${deal.finalScore >= 85 ? 'urgent' : ''}\">\n          <h2>${index + 1}. ${deal.address}, ${deal.city}</h2>\n          \n          <div style=\"display: flex; justify-content: space-between; align-items: center;\">\n            <div>\n              <p><strong>Property Type:</strong> ${deal.propertyType.toUpperCase()}</p>\n              <p><strong>List Price:</strong> $${(deal.listPrice / 1000000).toFixed(2)}M</p>\n            </div>\n            <div class=\"score tier-${deal.dealTier}\">${deal.finalScore}</div>\n          </div>\n          \n          <div class=\"metrics\">\n            <div class=\"metric\">\n              <div class=\"metric-value\">${deal.propertyData.financialModel.capRate}%</div>\n              <div>Cap Rate</div>\n            </div>\n            <div class=\"metric\">\n              <div class=\"metric-value\">${deal.propertyData.financialModel.projectedIRR}%</div>\n              <div>Projected IRR</div>\n            </div>\n            <div class=\"metric\">\n              <div class=\"metric-value\">${deal.propertyData.financialModel.dscr}</div>\n              <div>DSCR</div>\n            </div>\n          </div>\n          \n          <p><strong>Tier:</strong> ${deal.dealTier} - ${deal.tierDescription}</p>\n          <p><strong>Recommendation:</strong> ${deal.recommendation}</p>\n          \n          <p><strong>Top Strengths:</strong></p>\n          <ul>\n            ${deal.topStrengths.map(s => `<li>${s}</li>`).join('')}\n          </ul>\n          \n          ${deal.concerns.length > 0 ? `\n            <p><strong>Concerns:</strong></p>\n            <ul>\n              ${deal.concerns.map(c => `<li>${c}</li>`).join('')}\n            </ul>\n          ` : ''}\n          \n          <a href=\"https://propflow.app/deals/${deal.propertyId}\" class=\"action-btn\">View Full Analysis →</a>\n        </div>\n      `).join('')}\n      \n      <div style=\"text-align: center; padding: 30px; background: #ecf0f1; margin-top: 30px;\">\n        <p>PropFlow Capital Deal Flow Engine</p>\n        <p>Automated Property Intelligence System</p>\n      </div>\n    </body>\n    </html>\n  `;\n  \n  emails.push({\n    to: recipient.email,\n    recipientName: recipient.name,\n    subject: `🔥 ${allDeals.filter(d => d.finalScore >= 85).length} Hot Deals + ${allDeals.filter(d => d.finalScore >= 75 && d.finalScore < 85).length} High-Priority Opportunities`,\n    htmlBody: htmlBody,\n    dealCount: allDeals.length,\n    urgentCount: allDeals.filter(d => d.finalScore >= 85).length\n  });\n});\n\nconsole.log(`Created ${emails.length} email alerts`);\n\nreturn emails.map(email => ({ json: email }));"
+      },
+      "id": "format-email-006",
+      "name": "Format Email Alerts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [850, 600]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Simulate SendGrid API call to send email\nconst email = $input.item.json;\n\nconsole.log(`[SENDGRID] Sending email to ${email.recipientName} (${email.to})`);\n\n// In production: Call SendGrid API\n// POST to https://api.sendgrid.com/v3/mail/send\n\nconst sendGridResponse = {\n  messageId: `<${Math.random().toString(36).substr(2, 32)}@propflowcapital.com>`,\n  status: 'sent',\n  to: email.to,\n  from: 'alerts@propflowcapital.com',\n  subject: email.subject,\n  timestamp: new Date().toISOString()\n};\n\nreturn [{\n  json: {\n    ...email,\n    sendGridResponse: sendGridResponse,\n    sent: true,\n    sentAt: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "send-email-006",
+      "name": "Send SendGrid Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1050, 600]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Format Slack notification\nconst data = $input.first().json;\nconst urgentDeals = data.urgentDeals || [];\nconst highPriority = data.highPriority || [];\n\nconst slackMessage = {\n  channel: '#deal-alerts',\n  text: `🚨 New Hot Deals: ${urgentDeals.length} S-Tier, ${highPriority.length} A-Tier`,\n  blocks: [\n    {\n      type: 'header',\n      text: {\n        type: 'plain_text',\n        text: '🏢 PropFlow Deal Alerts'\n      }\n    },\n    {\n      type: 'section',\n      text: {\n        type: 'mrkdwn',\n        text: `*${urgentDeals.length + highPriority.length}* new high-priority deals available\\n*${urgentDeals.length}* S-Tier (Exceptional) | *${highPriority.length}* A-Tier (Excellent)`\n      }\n    },\n    {\n      type: 'divider'\n    },\n    ...urgentDeals.slice(0, 5).map(deal => ({\n      type: 'section',\n      text: {\n        type: 'mrkdwn',\n        text: `*🔥 ${deal.address}, ${deal.city}*\\n` +\n              `Score: *${deal.finalScore}/100* | Tier: *${deal.dealTier}*\\n` +\n              `💰 $${(deal.listPrice / 1000000).toFixed(2)}M | Cap: ${deal.propertyData.financialModel.capRate}% | IRR: ${deal.propertyData.financialModel.projectedIRR}%\\n` +\n              `📝 ${deal.recommendation}`\n      },\n      accessory: {\n        type: 'button',\n        text: {\n          type: 'plain_text',\n          text: 'View Deal'\n        },\n        url: `https://propflow.app/deals/${deal.propertyId}`\n      }\n    })),\n    {\n      type: 'context',\n      elements: [\n        {\n          type: 'mrkdwn',\n          text: `Updated: ${new Date().toLocaleString()}`\n        }\n      ]\n    }\n  ]\n};\n\nreturn [{ json: slackMessage }];"
+      },
+      "id": "format-slack-006",
+      "name": "Format Slack Notification",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [850, 800]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Simulate Slack webhook\nconst slackMessage = $input.first().json;\n\nconsole.log(`[SLACK] Posting to ${slackMessage.channel}`);\n\n// In production: POST to Slack webhook URL\n\nconst slackResponse = {\n  ok: true,\n  channel: slackMessage.channel,\n  ts: Date.now().toString(),\n  message: slackMessage\n};\n\nreturn [{\n  json: {\n    slackResponse: slackResponse,\n    sent: true,\n    sentAt: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "send-slack-006",
+      "name": "Send Slack Webhook",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1050, 800]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Format Zapier webhook payload\nconst data = $input.first().json;\nconst allDeals = [...(data.urgentDeals || []), ...(data.highPriority || [])];\n\nconst zapierPayload = {\n  event: 'new_hot_deals',\n  timestamp: new Date().toISOString(),\n  totalDeals: allDeals.length,\n  urgentCount: data.urgentDeals?.length || 0,\n  deals: allDeals.map(deal => ({\n    id: deal.propertyId,\n    address: deal.address,\n    city: deal.city,\n    state: 'TX',\n    listPrice: deal.listPrice,\n    propertyType: deal.propertyType,\n    score: deal.finalScore,\n    tier: deal.dealTier,\n    capRate: deal.propertyData.financialModel.capRate,\n    irr: deal.propertyData.financialModel.projectedIRR,\n    dscr: deal.propertyData.financialModel.dscr,\n    recommendation: deal.recommendation,\n    url: `https://propflow.app/deals/${deal.propertyId}`\n  }))\n};\n\nreturn [{ json: zapierPayload }];"
+      },
+      "id": "format-zapier-006",
+      "name": "Format Zapier Webhook",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [650, 700]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Simulate Zapier webhook trigger\nconst payload = $input.first().json;\n\nconsole.log(`[ZAPIER] Triggering webhook with ${payload.totalDeals} deals`);\n\n// In production: POST to Zapier webhook URL\n\nconst zapierResponse = {\n  status: 'success',\n  id: `zap-${Date.now()}`,\n  timestamp: new Date().toISOString()\n};\n\nreturn [{\n  json: {\n    zapierResponse: zapierResponse,\n    triggered: true,\n    triggeredAt: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "send-zapier-006",
+      "name": "Trigger Zapier Webhook",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [850, 700]
+    },
+    {
+      "parameters": {},
+      "id": "wait-all-006",
+      "name": "Wait for All Alerts",
+      "type": "n8n-nodes-base.aggregate",
+      "typeVersion": 1,
+      "position": [1250, 600]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Log all alert activity\nconst allAlerts = $input.all();\n\nconst summary = {\n  timestamp: new Date().toISOString(),\n  workflow: 'Alert Distribution System',\n  smsCount: allAlerts.filter(a => a.json.twilioResponse).length,\n  emailCount: allAlerts.filter(a => a.json.sendGridResponse).length,\n  slackSent: allAlerts.some(a => a.json.slackResponse),\n  zapierTriggered: allAlerts.some(a => a.json.zapierResponse),\n  totalAlerts: allAlerts.length,\n  success: true\n};\n\nconsole.log('Alert distribution complete:', JSON.stringify(summary, null, 2));\n\nreturn [{ json: summary }];"
+      },
+      "id": "log-activity-006",
+      "name": "Log Alert Activity",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1450, 600]
+    },
+    {
+      "parameters": {
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "respond-webhook-006",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [1650, 600]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [[{"node": "Process Alert Triggers", "type": "main", "index": 0}]]
+    },
+    "Process Alert Triggers": {
+      "main": [[
+        {"node": "Check for Urgent Deals", "type": "main", "index": 0},
+        {"node": "Format Email Alerts", "type": "main", "index": 0},
+        {"node": "Format Slack Notification", "type": "main", "index": 0},
+        {"node": "Format Zapier Webhook", "type": "main", "index": 0}
+      ]]
+    },
+    "Check for Urgent Deals": {
+      "main": [[{"node": "Format SMS Alerts", "type": "main", "index": 0}]]
+    },
+    "Format SMS Alerts": {
+      "main": [[{"node": "Send Twilio SMS", "type": "main", "index": 0}]]
+    },
+    "Send Twilio SMS": {
+      "main": [[{"node": "Wait for All Alerts", "type": "main", "index": 0}]]
+    },
+    "Format Email Alerts": {
+      "main": [[{"node": "Send SendGrid Email", "type": "main", "index": 0}]]
+    },
+    "Send SendGrid Email": {
+      "main": [[{"node": "Wait for All Alerts", "type": "main", "index": 0}]]
+    },
+    "Format Slack Notification": {
+      "main": [[{"node": "Send Slack Webhook", "type": "main", "index": 0}]]
+    },
+    "Send Slack Webhook": {
+      "main": [[{"node": "Wait for All Alerts", "type": "main", "index": 0}]]
+    },
+    "Format Zapier Webhook": {
+      "main": [[{"node": "Trigger Zapier Webhook", "type": "main", "index": 0}]]
+    },
+    "Trigger Zapier Webhook": {
+      "main": [[{"node": "Wait for All Alerts", "type": "main", "index": 0}]]
+    },
+    "Wait for All Alerts": {
+      "main": [[{"node": "Log Alert Activity", "type": "main", "index": 0}]]
+    },
+    "Log Alert Activity": {
+      "main": [[{"node": "Respond to Webhook", "type": "main", "index": 0}]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [
+    {"name": "PropFlow Capital", "id": "propflow-tag-001"},
+    {"name": "Delivery Layer", "id": "delivery-tag-001"}
+  ]
+}

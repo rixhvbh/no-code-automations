@@ -1,0 +1,215 @@
+{
+  "name": "PropFlow - Deal Scoring Engine",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "deal-scoring",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-trigger-005",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [250, 400],
+      "webhookId": "propflow-deal-scoring"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Fetch properties ready for scoring\nconst inputData = $input.first().json;\nconst requestData = inputData.body || inputData;\n\ntry {\n  console.log('Fetching properties for deal scoring');\n  \n  // In production, fetch properties with complete data from database\n  // For demo, generate sample properties\n  const properties = [];\n  \n  for (let i = 0; i < 30; i++) {\n    const capRate = (Math.random() * 5 + 5).toFixed(2); // 5-10%\n    const dscr = (Math.random() * 1 + 0.8).toFixed(2); // 0.8-1.8\n    const irr = (Math.random() * 10 + 10).toFixed(2); // 10-20%\n    \n    properties.push({\n      id: `prop-${i}`,\n      address: `${1000 + i} ${['Main', 'Oak', 'Elm', 'Pine', 'Maple'][i % 5]} St`,\n      city: ['Austin', 'Dallas', 'Houston', 'San Antonio'][i % 4],\n      state: 'TX',\n      listPrice: Math.floor(Math.random() * 4000000) + 1000000,\n      propertyType: ['multifamily', 'retail', 'office', 'industrial'][i % 4],\n      squareFeet: Math.floor(Math.random() * 40000) + 10000,\n      daysOnMarket: Math.floor(Math.random() * 90) + 1,\n      \n      financialModel: {\n        capRate: parseFloat(capRate),\n        dscr: parseFloat(dscr),\n        projectedIRR: parseFloat(irr),\n        cashOnCashReturn: (Math.random() * 15 + 5).toFixed(2)\n      },\n      \n      marketComparables: {\n        available: true,\n        isPricedBelowMarket: Math.random() > 0.5,\n        isCapRateAboveMarket: Math.random() > 0.5,\n        priceVsMarket: ((Math.random() * 20 - 10)).toFixed(2) + '%'\n      },\n      \n      entityResolution: {\n        keyPerson: {\n          name: `Person ${i}`,\n          title: ['CEO', 'Owner', 'Managing Partner'][i % 3]\n        }\n      },\n      \n      contactData: {\n        emails: Math.random() > 0.3 ? [{\n          email: `person${i}@example.com`,\n          status: 'verified'\n        }] : [],\n        phones: Math.random() > 0.4 ? [{\n          number: `+1-512-555-${String(i).padStart(4, '0')}`\n        }] : [],\n        qualityScore: Math.floor(Math.random() * 60) + 40\n      },\n      \n      propertyDescription: [\n        'Prime location with excellent foot traffic',\n        'Recently renovated, turnkey condition',\n        'Motivated seller, flexible terms',\n        'Strong rental history, stable tenants',\n        'Opportunity for value-add improvements'\n      ][i % 5]\n    });\n  }\n  \n  return properties.map(prop => ({ json: prop }));\n  \n} catch (error) {\n  console.error('Error fetching properties:', error.message);\n  throw error;\n}"
+      },
+      "id": "fetch-properties-005",
+      "name": "Fetch Properties for Scoring",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [450, 400]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Financial metrics scoring (35% weight)\nconst property = $input.item.json;\nconst financials = property.financialModel;\n\nlet financialScore = 0;\nconst financialDetails = [];\n\n// Cap Rate scoring (12%)\nif (financials.capRate >= 9) {\n  financialScore += 12;\n  financialDetails.push({ metric: 'Cap Rate', value: financials.capRate + '%', score: 12, note: 'Excellent' });\n} else if (financials.capRate >= 7.5) {\n  financialScore += 10;\n  financialDetails.push({ metric: 'Cap Rate', value: financials.capRate + '%', score: 10, note: 'Very Good' });\n} else if (financials.capRate >= 6.5) {\n  financialScore += 7;\n  financialDetails.push({ metric: 'Cap Rate', value: financials.capRate + '%', score: 7, note: 'Good' });\n} else {\n  financialScore += 3;\n  financialDetails.push({ metric: 'Cap Rate', value: financials.capRate + '%', score: 3, note: 'Below Target' });\n}\n\n// DSCR scoring (10%)\nif (financials.dscr >= 1.5) {\n  financialScore += 10;\n  financialDetails.push({ metric: 'DSCR', value: financials.dscr, score: 10, note: 'Strong' });\n} else if (financials.dscr >= 1.25) {\n  financialScore += 8;\n  financialDetails.push({ metric: 'DSCR', value: financials.dscr, score: 8, note: 'Good' });\n} else if (financials.dscr >= 1.0) {\n  financialScore += 5;\n  financialDetails.push({ metric: 'DSCR', value: financials.dscr, score: 5, note: 'Acceptable' });\n} else {\n  financialScore += 2;\n  financialDetails.push({ metric: 'DSCR', value: financials.dscr, score: 2, note: 'Risky' });\n}\n\n// IRR scoring (13%)\nif (financials.projectedIRR >= 18) {\n  financialScore += 13;\n  financialDetails.push({ metric: 'Projected IRR', value: financials.projectedIRR + '%', score: 13, note: 'Excellent' });\n} else if (financials.projectedIRR >= 15) {\n  financialScore += 11;\n  financialDetails.push({ metric: 'Projected IRR', value: financials.projectedIRR + '%', score: 11, note: 'Very Good' });\n} else if (financials.projectedIRR >= 12) {\n  financialScore += 8;\n  financialDetails.push({ metric: 'Projected IRR', value: financials.projectedIRR + '%', score: 8, note: 'Good' });\n} else {\n  financialScore += 4;\n  financialDetails.push({ metric: 'Projected IRR', value: financials.projectedIRR + '%', score: 4, note: 'Below Target' });\n}\n\nconsole.log(`Financial score for ${property.address}: ${financialScore}/35`);\n\nreturn [{\n  json: {\n    ...property,\n    scoring: {\n      financial: {\n        score: financialScore,\n        maxScore: 35,\n        details: financialDetails\n      }\n    }\n  }\n}];"
+      },
+      "id": "score-financials-005",
+      "name": "Score Financial Metrics",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [650, 400]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Location quality scoring (25% weight)\nconst property = $input.item.json;\n\nlet locationScore = 0;\nconst locationDetails = [];\n\n// City tier scoring\nconst cityTiers = {\n  'Austin': { score: 25, tier: 'Tier 1', growth: 'High' },\n  'Dallas': { score: 23, tier: 'Tier 1', growth: 'High' },\n  'Houston': { score: 22, tier: 'Tier 1', growth: 'Medium-High' },\n  'San Antonio': { score: 20, tier: 'Tier 2', growth: 'Medium' }\n};\n\nconst cityData = cityTiers[property.city] || { score: 15, tier: 'Tier 3', growth: 'Medium' };\nlocationScore = cityData.score;\n\nlocationDetails.push({\n  metric: 'City Quality',\n  value: property.city,\n  score: cityData.score,\n  note: `${cityData.tier}, ${cityData.growth} Growth`\n});\n\n// Property type demand bonus\nconst propertyTypeDemand = {\n  'multifamily': 5,\n  'industrial': 4,\n  'retail': 3,\n  'office': 2\n};\n\nconst typeBonus = propertyTypeDemand[property.propertyType] || 2;\nif (typeBonus > 0) {\n  locationDetails.push({\n    metric: 'Property Type Demand',\n    value: property.propertyType,\n    bonus: typeBonus,\n    note: typeBonus >= 4 ? 'High Demand' : 'Moderate Demand'\n  });\n}\n\nconsole.log(`Location score for ${property.city}: ${locationScore}/25`);\n\nreturn [{\n  json: {\n    ...property,\n    scoring: {\n      ...property.scoring,\n      location: {\n        score: locationScore,\n        maxScore: 25,\n        details: locationDetails\n      }\n    }\n  }\n}];"
+      },
+      "id": "score-location-005",
+      "name": "Score Location Quality",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [850, 400]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Owner motivation scoring (20% weight)\nconst property = $input.item.json;\n\nlet motivationScore = 0;\nconst motivationDetails = [];\n\n// Days on market\nif (property.daysOnMarket > 90) {\n  motivationScore += 12;\n  motivationDetails.push({ metric: 'Days on Market', value: property.daysOnMarket, score: 12, note: 'High Motivation' });\n} else if (property.daysOnMarket > 60) {\n  motivationScore += 10;\n  motivationDetails.push({ metric: 'Days on Market', value: property.daysOnMarket, score: 10, note: 'Good Motivation' });\n} else if (property.daysOnMarket > 30) {\n  motivationScore += 7;\n  motivationDetails.push({ metric: 'Days on Market', value: property.daysOnMarket, score: 7, note: 'Moderate' });\n} else {\n  motivationScore += 4;\n  motivationDetails.push({ metric: 'Days on Market', value: property.daysOnMarket, score: 4, note: 'New Listing' });\n}\n\n// Market positioning\nif (property.marketComparables?.isPricedBelowMarket) {\n  motivationScore += 8;\n  motivationDetails.push({ metric: 'Pricing', value: property.marketComparables.priceVsMarket, score: 8, note: 'Below Market' });\n} else {\n  motivationScore += 3;\n  motivationDetails.push({ metric: 'Pricing', value: property.marketComparables.priceVsMarket, score: 3, note: 'Market Rate' });\n}\n\nconsole.log(`Motivation score: ${motivationScore}/20`);\n\nreturn [{\n  json: {\n    ...property,\n    scoring: {\n      ...property.scoring,\n      motivation: {\n        score: motivationScore,\n        maxScore: 20,\n        details: motivationDetails\n      }\n    }\n  }\n}];"
+      },
+      "id": "score-motivation-005",
+      "name": "Score Owner Motivation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1050, 400]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Contact quality scoring (10% weight)\nconst property = $input.item.json;\nconst contacts = property.contactData;\n\nlet contactScore = 0;\nconst contactDetails = [];\n\n// Email availability and verification\nif (contacts.emails?.length > 0) {\n  const email = contacts.emails[0];\n  if (email.status === 'verified') {\n    contactScore += 6;\n    contactDetails.push({ metric: 'Email', value: 'Verified', score: 6, note: 'Direct contact available' });\n  } else {\n    contactScore += 3;\n    contactDetails.push({ metric: 'Email', value: 'Unverified', score: 3, note: 'Needs verification' });\n  }\n} else {\n  contactDetails.push({ metric: 'Email', value: 'None', score: 0, note: 'No email found' });\n}\n\n// Phone availability\nif (contacts.phones?.length > 0) {\n  contactScore += 4;\n  contactDetails.push({ metric: 'Phone', value: 'Available', score: 4, note: 'Phone contact available' });\n} else {\n  contactDetails.push({ metric: 'Phone', value: 'None', score: 0, note: 'No phone found' });\n}\n\nconsole.log(`Contact score: ${contactScore}/10`);\n\nreturn [{\n  json: {\n    ...property,\n    scoring: {\n      ...property.scoring,\n      contact: {\n        score: contactScore,\n        maxScore: 10,\n        details: contactDetails\n      }\n    }\n  }\n}];"
+      },
+      "id": "score-contact-005",
+      "name": "Score Contact Quality",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1250, 400]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Market timing scoring (10% weight)\nconst property = $input.item.json;\n\nlet timingScore = 0;\nconst timingDetails = [];\n\n// Simulated market cycle analysis\nconst marketCycle = ['Early Growth', 'Peak', 'Late Cycle', 'Correction'][Math.floor(Math.random() * 4)];\n\nconst cycleScoring = {\n  'Early Growth': { score: 10, note: 'Optimal buying opportunity' },\n  'Peak': { score: 6, note: 'Be cautious, prices at high' },\n  'Late Cycle': { score: 8, note: 'Good time for value plays' },\n  'Correction': { score: 9, note: 'Excellent buying conditions' }\n};\n\nconst cycleData = cycleScoring[marketCycle];\ntimingScore = cycleData.score;\n\ntimingDetails.push({\n  metric: 'Market Cycle',\n  value: marketCycle,\n  score: cycleData.score,\n  note: cycleData.note\n});\n\nconsole.log(`Market timing score: ${timingScore}/10`);\n\nreturn [{\n  json: {\n    ...property,\n    scoring: {\n      ...property.scoring,\n      timing: {\n        score: timingScore,\n        maxScore: 10,\n        details: timingDetails,\n        marketCycle: marketCycle\n      }\n    }\n  }\n}];"
+      },
+      "id": "score-timing-005",
+      "name": "Score Market Timing",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1450, 400]
+    },
+    {
+      "parameters": {
+        "functionCode": "// GPT-4 property analysis (qualitative enhancement)\nconst property = $input.item.json;\n\n// In production, call OpenAI GPT-4 API\n// For demo, simulate AI analysis\n\nconst description = property.propertyDescription;\n\n// Simulated GPT-4 analysis\nconst aiAnalysis = {\n  sentiment: Math.random() > 0.3 ? 'positive' : 'neutral',\n  opportunityKeywords: [],\n  riskFactors: [],\n  summary: '',\n  investmentThesis: '',\n  scoreAdjustment: 0\n};\n\n// Keyword detection\nconst positiveKeywords = ['prime', 'excellent', 'renovated', 'motivated', 'strong', 'stable', 'opportunity', 'turnkey'];\nconst riskKeywords = ['needs work', 'deferred maintenance', 'challenging', 'uncertain'];\n\npositiveKeywords.forEach(keyword => {\n  if (description.toLowerCase().includes(keyword)) {\n    aiAnalysis.opportunityKeywords.push(keyword);\n    aiAnalysis.scoreAdjustment += 0.5;\n  }\n});\n\nriskKeywords.forEach(keyword => {\n  if (description.toLowerCase().includes(keyword)) {\n    aiAnalysis.riskFactors.push(keyword);\n    aiAnalysis.scoreAdjustment -= 1;\n  }\n});\n\naiAnalysis.summary = `${property.propertyType} property in ${property.city} with ${aiAnalysis.opportunityKeywords.length} positive indicators.`;\n\naiAnalysis.investmentThesis = aiAnalysis.sentiment === 'positive' \n  ? 'Strong investment opportunity based on financials and market position.'\n  : 'Moderate opportunity, requires further due diligence.';\n\nconsole.log(`AI Analysis: ${aiAnalysis.sentiment}, Score adjustment: ${aiAnalysis.scoreAdjustment}`);\n\nreturn [{\n  json: {\n    ...property,\n    aiAnalysis: aiAnalysis\n  }\n}];"
+      },
+      "id": "gpt-analysis-005",
+      "name": "GPT-4 Property Analysis",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1650, 400]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Calculate final deal score\nconst property = $input.item.json;\nconst scoring = property.scoring;\nconst aiAnalysis = property.aiAnalysis;\n\n// Sum all component scores\nconst totalScore = \n  scoring.financial.score +\n  scoring.location.score +\n  scoring.motivation.score +\n  scoring.contact.score +\n  scoring.timing.score +\n  aiAnalysis.scoreAdjustment;\n\n// Maximum possible score: 100\nconst maxScore = 100;\nconst finalScore = Math.min(Math.max(Math.round(totalScore), 0), 100);\n\n// Determine deal tier\nlet dealTier = 'D';\nlet tierDescription = '';\nlet action = '';\n\nif (finalScore >= 85) {\n  dealTier = 'S';\n  tierDescription = 'Exceptional Deal';\n  action = 'IMMEDIATE ACTION REQUIRED';\n} else if (finalScore >= 75) {\n  dealTier = 'A';\n  tierDescription = 'Excellent Deal';\n  action = 'High Priority - Review Today';\n} else if (finalScore >= 65) {\n  dealTier = 'B';\n  tierDescription = 'Good Deal';\n  action = 'Review This Week';\n} else if (finalScore >= 50) {\n  dealTier = 'C';\n  tierDescription = 'Fair Deal';\n  action = 'Monitor for Changes';\n} else {\n  dealTier = 'D';\n  tierDescription = 'Below Threshold';\n  action = 'Low Priority';\n}\n\n// Investment recommendation\nlet recommendation = '';\nif (finalScore >= 85) {\n  recommendation = 'STRONG BUY - Initiate contact immediately and prepare offer.';\n} else if (finalScore >= 75) {\n  recommendation = 'BUY - Schedule property tour and begin due diligence.';\n} else if (finalScore >= 65) {\n  recommendation = 'CONSIDER - Conduct further analysis, evaluate against alternatives.';\n} else if (finalScore >= 50) {\n  recommendation = 'WATCH - Monitor for price reductions or market changes.';\n} else {\n  recommendation = 'PASS - Does not meet investment criteria at this time.';\n}\n\nconst finalDealScore = {\n  propertyId: property.id,\n  address: property.address,\n  city: property.city,\n  listPrice: property.listPrice,\n  propertyType: property.propertyType,\n  \n  // Scoring breakdown\n  scoreBreakdown: {\n    financial: scoring.financial.score,\n    location: scoring.location.score,\n    motivation: scoring.motivation.score,\n    contact: scoring.contact.score,\n    timing: scoring.timing.score,\n    aiAdjustment: aiAnalysis.scoreAdjustment,\n    total: finalScore\n  },\n  \n  // Final assessment\n  finalScore: finalScore,\n  maxScore: maxScore,\n  dealTier: dealTier,\n  tierDescription: tierDescription,\n  recommendation: recommendation,\n  action: action,\n  \n  // Highlights\n  topStrengths: [\n    ...scoring.financial.details.filter(d => d.score >= 10).map(d => `${d.metric}: ${d.note}`),\n    ...scoring.location.details.filter(d => d.score >= 20).map(d => `${d.metric}: ${d.note}`),\n    ...(aiAnalysis.opportunityKeywords.length > 2 ? ['Strong property description indicators'] : [])\n  ].slice(0, 3),\n  \n  concerns: [\n    ...scoring.financial.details.filter(d => d.score < 8).map(d => `${d.metric}: ${d.note}`),\n    ...scoring.contact.details.filter(d => d.score === 0).map(d => `${d.metric}: ${d.note}`),\n    ...aiAnalysis.riskFactors.map(r => `Risk flag: ${r}`)\n  ].slice(0, 3),\n  \n  // Full property data\n  propertyData: property,\n  scoredAt: new Date().toISOString()\n};\n\nconsole.log(`Final Score: ${finalScore}/100 - Tier ${dealTier} - ${tierDescription}`);\n\nreturn [{ json: finalDealScore }];"
+      },
+      "id": "calculate-final-005",
+      "name": "Calculate Final Deal Score",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1850, 400]
+    },
+    {
+      "parameters": {},
+      "id": "aggregate-scores-005",
+      "name": "Aggregate All Scores",
+      "type": "n8n-nodes-base.aggregate",
+      "typeVersion": 1,
+      "position": [2050, 400]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Sort and rank deals\nconst deals = $input.all().map(item => item.json);\n\n// Sort by final score (descending)\ndeals.sort((a, b) => b.finalScore - a.finalScore);\n\n// Add rank\ndeals.forEach((deal, index) => {\n  deal.rank = index + 1;\n});\n\nconst summary = {\n  totalDeals: deals.length,\n  tierBreakdown: {\n    S: deals.filter(d => d.dealTier === 'S').length,\n    A: deals.filter(d => d.dealTier === 'A').length,\n    B: deals.filter(d => d.dealTier === 'B').length,\n    C: deals.filter(d => d.dealTier === 'C').length,\n    D: deals.filter(d => d.dealTier === 'D').length\n  },\n  averageScore: (deals.reduce((sum, d) => sum + d.finalScore, 0) / deals.length).toFixed(2),\n  topDeals: deals.filter(d => d.finalScore >= 85),\n  actionRequired: deals.filter(d => d.finalScore >= 75)\n};\n\nconsole.log(`Scored ${deals.length} deals. ${summary.topDeals.length} S-tier, ${summary.actionRequired.length} require action.`);\n\nreturn [{\n  json: {\n    summary: summary,\n    rankedDeals: deals,\n    timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "rank-deals-005",
+      "name": "Rank and Sort Deals",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2250, 400]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Save scored deals to database\nconst data = $input.first().json;\n\nconsole.log(`[DATABASE] Saving ${data.rankedDeals.length} scored deals`);\n\n// In production, write to database\n\nconst result = {\n  success: true,\n  dealsSaved: data.rankedDeals.length,\n  summary: data.summary,\n  timestamp: new Date().toISOString(),\n  nextStep: 'delivery-layer'\n};\n\nreturn [{ json: result }];"
+      },
+      "id": "save-scores-005",
+      "name": "Save Deal Scores",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2450, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.WEBHOOK_URL_ALERT_DISTRIBUTION }}",
+        "options": {
+          "timeout": 30000
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "topDeals",
+              "value": "={{ JSON.stringify($json.summary.topDeals) }}"
+            },
+            {
+              "name": "trigger",
+              "value": "scoring-complete"
+            }
+          ]
+        }
+      },
+      "id": "trigger-alerts-005",
+      "name": "Trigger Alert Distribution",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2650, 400]
+    },
+    {
+      "parameters": {
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "respond-webhook-005",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [2850, 400]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [[{"node": "Fetch Properties for Scoring", "type": "main", "index": 0}]]
+    },
+    "Fetch Properties for Scoring": {
+      "main": [[{"node": "Score Financial Metrics", "type": "main", "index": 0}]]
+    },
+    "Score Financial Metrics": {
+      "main": [[{"node": "Score Location Quality", "type": "main", "index": 0}]]
+    },
+    "Score Location Quality": {
+      "main": [[{"node": "Score Owner Motivation", "type": "main", "index": 0}]]
+    },
+    "Score Owner Motivation": {
+      "main": [[{"node": "Score Contact Quality", "type": "main", "index": 0}]]
+    },
+    "Score Contact Quality": {
+      "main": [[{"node": "Score Market Timing", "type": "main", "index": 0}]]
+    },
+    "Score Market Timing": {
+      "main": [[{"node": "GPT-4 Property Analysis", "type": "main", "index": 0}]]
+    },
+    "GPT-4 Property Analysis": {
+      "main": [[{"node": "Calculate Final Deal Score", "type": "main", "index": 0}]]
+    },
+    "Calculate Final Deal Score": {
+      "main": [[{"node": "Aggregate All Scores", "type": "main", "index": 0}]]
+    },
+    "Aggregate All Scores": {
+      "main": [[{"node": "Rank and Sort Deals", "type": "main", "index": 0}]]
+    },
+    "Rank and Sort Deals": {
+      "main": [[{"node": "Save Deal Scores", "type": "main", "index": 0}]]
+    },
+    "Save Deal Scores": {
+      "main": [[{"node": "Trigger Alert Distribution", "type": "main", "index": 0}]]
+    },
+    "Trigger Alert Distribution": {
+      "main": [[{"node": "Respond to Webhook", "type": "main", "index": 0}]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [
+    {"name": "PropFlow Capital", "id": "propflow-tag-001"},
+    {"name": "Orchestration Layer", "id": "orchestration-tag-001"}
+  ]
+}

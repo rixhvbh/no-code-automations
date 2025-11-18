@@ -1,0 +1,182 @@
+{
+  "name": "PropFlow - Property Deduplication Engine",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "property-deduplication",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-trigger-002",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [250, 300],
+      "webhookId": "propflow-dedup-webhook"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Validate input and extract batch data\nconst inputData = $input.first().json;\nconst requestData = inputData.body || inputData;\n\ntry {\n  // Validate required fields\n  if (!requestData.batchId) {\n    throw new Error('batchId is required');\n  }\n  \n  console.log(`Processing deduplication for batch ${requestData.batchId}`);\n  \n  // In production, fetch properties from database using batchId\n  // For demo, generate sample properties\n  const properties = [];\n  \n  // Simulate fetching 50 properties (some will be duplicates)\n  for (let i = 0; i < 50; i++) {\n    const isDuplicate = i > 30 && Math.random() > 0.5;\n    const baseIndex = isDuplicate ? Math.floor(Math.random() * 30) : i;\n    \n    properties.push({\n      id: `prop-${i}`,\n      address: isDuplicate ? `${1000 + baseIndex} Main St` : `${1000 + i} ${['Main', 'Oak', 'Elm'][i % 3]} St`,\n      city: 'Austin',\n      state: 'TX',\n      zipCode: isDuplicate ? String(78701 + (baseIndex % 10)) : String(78701 + (i % 10)),\n      latitude: isDuplicate ? 30.2672 + (baseIndex * 0.001) : 30.2672 + (i * 0.001),\n      longitude: isDuplicate ? -97.7431 + (baseIndex * 0.001) : -97.7431 + (i * 0.001),\n      ownerName: isDuplicate ? `Owner ${baseIndex} LLC` : `Owner ${i} LLC`,\n      listPrice: 1000000 + (i * 50000),\n      squareFeet: 10000 + (i * 500),\n      source: ['LoopNet', 'CoStar', 'Crexi'][i % 3],\n      parcelId: isDuplicate ? `PARC-${baseIndex}` : (Math.random() > 0.7 ? `PARC-${i}` : null)\n    });\n  }\n  \n  return [{\n    json: {\n      batchId: requestData.batchId,\n      properties: properties,\n      totalCount: properties.length,\n      timestamp: new Date().toISOString()\n    }\n  }];\n  \n} catch (error) {\n  console.error('Validation error:', error.message);\n  throw error;\n}"
+      },
+      "id": "validate-input-002",
+      "name": "Validate Input & Fetch Properties",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Advanced deduplication algorithm\nconst data = $input.first().json;\nconst properties = data.properties;\n\nconsole.log(`Starting deduplication on ${properties.length} properties`);\n\n// Normalize addresses for comparison\nfunction normalizeAddress(address) {\n  return address\n    .toUpperCase()\n    .replace(/\\bSTREET\\b/g, 'ST')\n    .replace(/\\bAVENUE\\b/g, 'AVE')\n    .replace(/\\bROAD\\b/g, 'RD')\n    .replace(/\\bBOULEVARD\\b/g, 'BLVD')\n    .replace(/[^A-Z0-9]/g, '');\n}\n\n// Calculate Levenshtein distance for fuzzy matching\nfunction levenshteinDistance(str1, str2) {\n  const matrix = [];\n  \n  for (let i = 0; i <= str2.length; i++) {\n    matrix[i] = [i];\n  }\n  \n  for (let j = 0; j <= str1.length; j++) {\n    matrix[0][j] = j;\n  }\n  \n  for (let i = 1; i <= str2.length; i++) {\n    for (let j = 1; j <= str1.length; j++) {\n      if (str2.charAt(i - 1) === str1.charAt(j - 1)) {\n        matrix[i][j] = matrix[i - 1][j - 1];\n      } else {\n        matrix[i][j] = Math.min(\n          matrix[i - 1][j - 1] + 1,\n          matrix[i][j - 1] + 1,\n          matrix[i - 1][j] + 1\n        );\n      }\n    }\n  }\n  \n  return matrix[str2.length][str1.length];\n}\n\n// Calculate geographic distance (Haversine formula)\nfunction calculateDistance(lat1, lon1, lat2, lon2) {\n  const R = 6371; // Earth's radius in km\n  const dLat = (lat2 - lat1) * Math.PI / 180;\n  const dLon = (lon2 - lon1) * Math.PI / 180;\n  \n  const a = \n    Math.sin(dLat / 2) * Math.sin(dLat / 2) +\n    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *\n    Math.sin(dLon / 2) * Math.sin(dLon / 2);\n  \n  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));\n  const distance = R * c * 1000; // Convert to meters\n  \n  return distance;\n}\n\n// Deduplication matching function\nfunction calculateMatchScore(prop1, prop2) {\n  let score = 0;\n  let confidence = 0;\n  const reasons = [];\n  \n  // 1. Exact parcel ID match (highest confidence)\n  if (prop1.parcelId && prop2.parcelId && prop1.parcelId === prop2.parcelId) {\n    score += 100;\n    confidence = 100;\n    reasons.push('Exact parcel ID match');\n    return { score, confidence, reasons };\n  }\n  \n  // 2. Address matching\n  const addr1 = normalizeAddress(`${prop1.address}${prop1.zipCode}`);\n  const addr2 = normalizeAddress(`${prop2.address}${prop2.zipCode}`);\n  \n  if (addr1 === addr2) {\n    score += 50;\n    confidence = 95;\n    reasons.push('Exact address match');\n  } else {\n    const distance = levenshteinDistance(addr1, addr2);\n    const similarity = 1 - (distance / Math.max(addr1.length, addr2.length));\n    \n    if (similarity > 0.9) {\n      score += 40;\n      confidence = Math.max(confidence, 85);\n      reasons.push(`High address similarity (${(similarity * 100).toFixed(1)}%)`);\n    }\n  }\n  \n  // 3. Geographic proximity\n  if (prop1.latitude && prop2.latitude) {\n    const distance = calculateDistance(\n      prop1.latitude, prop1.longitude,\n      prop2.latitude, prop2.longitude\n    );\n    \n    if (distance < 30) { // Within 30 meters\n      score += 30;\n      confidence = Math.max(confidence, 85);\n      reasons.push(`Same location (${distance.toFixed(1)}m apart)`);\n    } else if (distance < 100) {\n      score += 15;\n      confidence = Math.max(confidence, 70);\n      reasons.push(`Close proximity (${distance.toFixed(1)}m apart)`);\n    }\n  }\n  \n  // 4. Owner name matching\n  const owner1 = normalizeAddress(prop1.ownerName || '');\n  const owner2 = normalizeAddress(prop2.ownerName || '');\n  \n  if (owner1 && owner2 && owner1 === owner2) {\n    score += 20;\n    reasons.push('Same owner');\n  }\n  \n  // Final confidence calculation\n  if (score >= 80) {\n    confidence = Math.max(confidence, 95);\n  } else if (score >= 60) {\n    confidence = Math.max(confidence, 80);\n  } else if (score >= 40) {\n    confidence = Math.max(confidence, 60);\n  }\n  \n  return { score, confidence, reasons };\n}\n\n// Group duplicates\nconst duplicateGroups = [];\nconst processed = new Set();\n\nfor (let i = 0; i < properties.length; i++) {\n  if (processed.has(i)) continue;\n  \n  const group = {\n    master: properties[i],\n    duplicates: [],\n    groupId: `group-${duplicateGroups.length + 1}`\n  };\n  \n  processed.add(i);\n  \n  for (let j = i + 1; j < properties.length; j++) {\n    if (processed.has(j)) continue;\n    \n    const match = calculateMatchScore(properties[i], properties[j]);\n    \n    if (match.confidence >= 70) {\n      group.duplicates.push({\n        property: properties[j],\n        matchScore: match.score,\n        confidence: match.confidence,\n        reasons: match.reasons\n      });\n      processed.add(j);\n    }\n  }\n  \n  duplicateGroups.push(group);\n}\n\n// Merge duplicate data (take best data from each duplicate)\nconst deduplicatedProperties = duplicateGroups.map(group => {\n  const merged = { ...group.master };\n  \n  // Prefer properties with more complete data\n  group.duplicates.forEach(dup => {\n    Object.keys(dup.property).forEach(key => {\n      if (!merged[key] && dup.property[key]) {\n        merged[key] = dup.property[key];\n      }\n    });\n  });\n  \n  merged.isDeduplicated = group.duplicates.length > 0;\n  merged.duplicateCount = group.duplicates.length;\n  merged.groupId = group.groupId;\n  merged.sources = [merged.source, ...group.duplicates.map(d => d.property.source)];\n  \n  return merged;\n});\n\nconst stats = {\n  totalInput: properties.length,\n  totalOutput: deduplicatedProperties.length,\n  duplicatesRemoved: properties.length - deduplicatedProperties.length,\n  deduplicationRate: (((properties.length - deduplicatedProperties.length) / properties.length) * 100).toFixed(2) + '%'\n};\n\nconsole.log('Deduplication complete:', stats);\n\nreturn [{\n  json: {\n    batchId: data.batchId,\n    properties: deduplicatedProperties,\n    statistics: stats,\n    timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "deduplication-engine-002",
+      "name": "Deduplication Engine",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Owner entity resolution\n// Chain: Property → LLC → Registered Agent → Parent Company → Key Person\n\nconst data = $input.first().json;\nconst properties = data.properties;\n\nconsole.log(`Resolving entities for ${properties.length} properties`);\n\n// Simulate entity resolution (in production, call Secretary of State APIs)\nconst resolvedProperties = properties.map(prop => {\n  const ownerLLC = prop.ownerName;\n  \n  // Simulate LLC lookup\n  const entityResolution = {\n    llcName: ownerLLC,\n    registeredAgent: `Agent Services Inc`,\n    registeredState: prop.state,\n    parentCompany: Math.random() > 0.5 ? `${ownerLLC.replace(' LLC', '')} Holdings` : null,\n    keyPerson: {\n      name: `${['John', 'Jane', 'Michael', 'Sarah'][Math.floor(Math.random() * 4)]} ${['Smith', 'Johnson', 'Williams'][Math.floor(Math.random() * 3)]}`,\n      title: ['CEO', 'Managing Partner', 'President', 'Owner'][Math.floor(Math.random() * 4)],\n      confidence: Math.floor(Math.random() * 30) + 70\n    },\n    businessAddress: `${prop.address}, ${prop.city}, ${prop.state}`,\n    filingDate: new Date(Date.now() - Math.floor(Math.random() * 365 * 5) * 24 * 60 * 60 * 1000).toISOString().split('T')[0],\n    entityType: 'LLC',\n    status: 'Active'\n  };\n  \n  return {\n    ...prop,\n    entityResolution: entityResolution,\n    entityResolved: true,\n    hasKeyPerson: true\n  };\n});\n\nconsole.log(`Resolved entities for ${resolvedProperties.length} properties`);\n\nreturn [{\n  json: {\n    batchId: data.batchId,\n    properties: resolvedProperties,\n    statistics: data.statistics,\n    timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "entity-resolution-002",
+      "name": "Owner Entity Resolution",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Financial modeling and calculations\nconst data = $input.first().json;\nconst properties = data.properties;\n\nconsole.log(`Calculating financial models for ${properties.length} properties`);\n\nconst propertiesWithFinancials = properties.map(prop => {\n  // Calculate or refine financial metrics\n  const listPrice = prop.listPrice;\n  const squareFeet = prop.squareFeet;\n  const estimatedNOI = listPrice * (Math.random() * 0.05 + 0.06); // 6-11% NOI\n  \n  // Cap Rate\n  const capRate = ((estimatedNOI / listPrice) * 100).toFixed(2);\n  \n  // Assume 75% LTV financing at 6.5% interest\n  const loanAmount = listPrice * 0.75;\n  const downPayment = listPrice * 0.25;\n  const interestRate = 0.065;\n  const loanTerm = 30;\n  \n  // Monthly payment calculation\n  const monthlyRate = interestRate / 12;\n  const numPayments = loanTerm * 12;\n  const monthlyPayment = loanAmount * (monthlyRate * Math.pow(1 + monthlyRate, numPayments)) / (Math.pow(1 + monthlyRate, numPayments) - 1);\n  const annualDebtService = monthlyPayment * 12;\n  \n  // Cash Flow\n  const annualCashFlow = estimatedNOI - annualDebtService;\n  const cashOnCashReturn = ((annualCashFlow / downPayment) * 100).toFixed(2);\n  \n  // DSCR (Debt Service Coverage Ratio)\n  const dscr = (estimatedNOI / annualDebtService).toFixed(2);\n  \n  // Price per square foot\n  const pricePerSqFt = Math.round(listPrice / squareFeet);\n  \n  // IRR projection (simplified)\n  const projectedAppreciation = 0.03; // 3% annual appreciation\n  const projectedYear5Value = listPrice * Math.pow(1 + projectedAppreciation, 5);\n  const totalCashFlow5Years = annualCashFlow * 5;\n  const totalReturn = (projectedYear5Value - listPrice + totalCashFlow5Years);\n  const irr = ((Math.pow(totalReturn / downPayment, 1/5) - 1) * 100).toFixed(2);\n  \n  const financialModel = {\n    // Core metrics\n    listPrice: listPrice,\n    estimatedNOI: Math.round(estimatedNOI),\n    capRate: parseFloat(capRate),\n    pricePerSqFt: pricePerSqFt,\n    \n    // Financing\n    loanAmount: Math.round(loanAmount),\n    downPayment: Math.round(downPayment),\n    interestRate: interestRate,\n    monthlyPayment: Math.round(monthlyPayment),\n    annualDebtService: Math.round(annualDebtService),\n    \n    // Returns\n    annualCashFlow: Math.round(annualCashFlow),\n    cashOnCashReturn: parseFloat(cashOnCashReturn),\n    dscr: parseFloat(dscr),\n    projectedIRR: parseFloat(irr),\n    \n    // Projections\n    year5Value: Math.round(projectedYear5Value),\n    totalReturn5Year: Math.round(totalReturn),\n    \n    // Investment quality indicators\n    meetsCapRateMin: parseFloat(capRate) >= 7,\n    meetsDSCRMin: parseFloat(dscr) >= 1.25,\n    meetsIRRMin: parseFloat(irr) >= 15\n  };\n  \n  return {\n    ...prop,\n    financialModel: financialModel,\n    financialsCalculated: true\n  };\n});\n\nconsole.log(`Financial modeling complete for ${propertiesWithFinancials.length} properties`);\n\nreturn [{\n  json: {\n    batchId: data.batchId,\n    properties: propertiesWithFinancials,\n    statistics: data.statistics,\n    timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "financial-modeling-002",
+      "name": "Financial Modeling Engine",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1050, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Market comparables analysis\nconst data = $input.first().json;\nconst properties = data.properties;\n\nconsole.log(`Running comparable analysis for ${properties.length} properties`);\n\n// Group properties by city and property type for comparison\nconst groupedProperties = {};\n\nproperties.forEach(prop => {\n  const key = `${prop.city}-${prop.propertyType || 'unknown'}`;\n  if (!groupedProperties[key]) {\n    groupedProperties[key] = [];\n  }\n  groupedProperties[key].push(prop);\n});\n\n// Calculate market statistics for each group\nconst propertiesWithComps = properties.map(prop => {\n  const key = `${prop.city}-${prop.propertyType || 'unknown'}`;\n  const comparables = groupedProperties[key] || [];\n  \n  if (comparables.length < 2) {\n    return {\n      ...prop,\n      marketComparables: {\n        available: false,\n        message: 'Insufficient comparable properties'\n      }\n    };\n  }\n  \n  // Calculate market statistics\n  const prices = comparables.map(p => p.listPrice);\n  const capRates = comparables.map(p => p.financialModel?.capRate || 0).filter(r => r > 0);\n  const pricesPerSqFt = comparables.map(p => p.financialModel?.pricePerSqFt || 0).filter(p => p > 0);\n  \n  const median = arr => {\n    const sorted = [...arr].sort((a, b) => a - b);\n    const mid = Math.floor(sorted.length / 2);\n    return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;\n  };\n  \n  const average = arr => arr.reduce((sum, val) => sum + val, 0) / arr.length;\n  \n  const marketStats = {\n    available: true,\n    comparableCount: comparables.length,\n    medianPrice: Math.round(median(prices)),\n    averagePrice: Math.round(average(prices)),\n    medianCapRate: capRates.length > 0 ? parseFloat(median(capRates).toFixed(2)) : null,\n    medianPricePerSqFt: pricesPerSqFt.length > 0 ? Math.round(median(pricesPerSqFt)) : null,\n    \n    // Relative positioning\n    priceVsMarket: ((prop.listPrice / median(prices) - 1) * 100).toFixed(2) + '%',\n    capRateVsMarket: prop.financialModel?.capRate && capRates.length > 0 \n      ? ((prop.financialModel.capRate / median(capRates) - 1) * 100).toFixed(2) + '%'\n      : null,\n    \n    // Value assessment\n    isPricedBelowMarket: prop.listPrice < median(prices),\n    isCapRateAboveMarket: prop.financialModel?.capRate && capRates.length > 0 \n      ? prop.financialModel.capRate > median(capRates)\n      : null\n  };\n  \n  return {\n    ...prop,\n    marketComparables: marketStats\n  };\n});\n\nconsole.log(`Market analysis complete for ${propertiesWithComps.length} properties`);\n\nreturn [{\n  json: {\n    batchId: data.batchId,\n    properties: propertiesWithComps,\n    statistics: data.statistics,\n    processingComplete: true,\n    timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "market-analysis-002",
+      "name": "Market Comparables Analysis",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1250, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Save processed properties to database\nconst data = $input.first().json;\n\nconsole.log(`[DATABASE] Saving ${data.properties.length} processed properties`);\n\n// In production, write to PostgreSQL\nconst result = {\n  success: true,\n  batchId: data.batchId,\n  recordsProcessed: data.properties.length,\n  statistics: data.statistics,\n  timestamp: new Date().toISOString(),\n  nextStep: 'enrichment-layer'\n};\n\nreturn [{ json: result }];"
+      },
+      "id": "save-processed-002",
+      "name": "Save Processed Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1450, 300]
+    },
+    {
+      "parameters": {
+        "options": {
+          "responseCode": 200\n        }\n      },
+      "id": "respond-webhook-002",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [1650, 300]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Validate Input & Fetch Properties",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Input & Fetch Properties": {
+      "main": [
+        [
+          {
+            "node": "Deduplication Engine",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Deduplication Engine": {
+      "main": [
+        [
+          {
+            "node": "Owner Entity Resolution",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Owner Entity Resolution": {
+      "main": [
+        [
+          {
+            "node": "Financial Modeling Engine",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Financial Modeling Engine": {
+      "main": [
+        [
+          {
+            "node": "Market Comparables Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Market Comparables Analysis": {
+      "main": [
+        [
+          {
+            "node": "Save Processed Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Processed Data": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "PropFlow Capital",
+      "id": "propflow-tag-001"
+    },
+    {
+      "name": "Processing Layer",
+      "id": "processing-tag-001"
+    }
+  ]
+}

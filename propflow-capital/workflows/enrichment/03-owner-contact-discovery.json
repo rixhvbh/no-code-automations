@@ -1,0 +1,283 @@
+{
+  "name": "PropFlow - Owner Contact Discovery Chain",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "contact-discovery",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-trigger-003",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [250, 400],
+      "webhookId": "propflow-contact-discovery"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Extract properties needing contact enrichment\nconst inputData = $input.first().json;\nconst requestData = inputData.body || inputData;\n\ntry {\n  if (!requestData.batchId && !requestData.propertyIds) {\n    throw new Error('Either batchId or propertyIds is required');\n  }\n  \n  console.log('Starting contact discovery workflow');\n  \n  // In production, fetch from database\n  // For demo, simulate properties without contacts\n  const properties = [];\n  \n  for (let i = 0; i < 20; i++) {\n    properties.push({\n      id: `prop-${i}`,\n      address: `${1000 + i} Main St, Austin, TX 78701`,\n      ownerName: `${['Smith', 'Johnson', 'Williams', 'Brown', 'Davis'][i % 5]} Properties LLC`,\n      entityResolution: {\n        llcName: `${['Smith', 'Johnson', 'Williams', 'Brown', 'Davis'][i % 5]} Properties LLC`,\n        keyPerson: {\n          name: `${['John', 'Jane', 'Michael', 'Sarah', 'David'][i % 5]} ${['Smith', 'Johnson', 'Williams', 'Brown', 'Davis'][i % 5]}`,\n          title: ['CEO', 'Managing Partner', 'President'][i % 3]\n        }\n      },\n      hasContact: false\n    });\n  }\n  \n  return properties.map(prop => ({ json: prop }));\n  \n} catch (error) {\n  console.error('Input validation error:', error.message);\n  throw error;\n}"
+      },
+      "id": "fetch-properties-003",
+      "name": "Fetch Properties Without Contacts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [450, 400]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Step 1: Extract company domain from LLC name\nconst property = $input.item.json;\nconst llcName = property.entityResolution.llcName;\n\nconsole.log(`Discovering contacts for ${llcName}`);\n\n// Extract potential company name (remove LLC, Properties, etc.)\nconst cleanName = llcName\n  .replace(/\\bLLC\\b/gi, '')\n  .replace(/\\bProperties\\b/gi, '')\n  .replace(/\\bInvestments\\b/gi, '')\n  .replace(/\\bHoldings\\b/gi, '')\n  .replace(/\\bGroup\\b/gi, '')\n  .trim();\n\n// Generate potential domain names\nconst potentialDomains = [\n  `${cleanName.toLowerCase().replace(/\\s+/g, '')}.com`,\n  `${cleanName.toLowerCase().replace(/\\s+/g, '-')}.com`,\n  `${cleanName.toLowerCase().replace(/\\s+/g, '')}properties.com`,\n  `${cleanName.toLowerCase().replace(/\\s+/g, '')}investments.com`\n];\n\n// Simulate domain validation (in production, use DNS lookup)\nconst validDomain = potentialDomains[0];\n\nreturn [{\n  json: {\n    ...property,\n    companyDomain: validDomain,\n    potentialDomains: potentialDomains,\n    discoveryStep: 'domain-found'\n  }\n}];"
+      },
+      "id": "extract-domain-003",
+      "name": "Extract Company Domain",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [650, 400]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Step 2: Email pattern generation and discovery\nconst property = $input.item.json;\nconst keyPerson = property.entityResolution.keyPerson;\nconst domain = property.companyDomain;\n\nconst nameParts = keyPerson.name.split(' ');\nconst firstName = nameParts[0].toLowerCase();\nconst lastName = nameParts[nameParts.length - 1].toLowerCase();\nconst firstInitial = firstName.charAt(0);\nconst lastInitial = lastName.charAt(0);\n\n// Generate email permutations\nconst emailPatterns = [\n  `${firstName}.${lastName}@${domain}`,\n  `${firstName}${lastName}@${domain}`,\n  `${firstInitial}${lastName}@${domain}`,\n  `${firstName}${lastInitial}@${domain}`,\n  `${firstName}@${domain}`,\n  `${lastName}@${domain}`,\n  `${firstInitial}.${lastName}@${domain}`,\n  `${firstName}_${lastName}@${domain}`\n];\n\n// Simulate Hunter.io / Apollo.io API call\n// In production, call actual email discovery APIs\nconst discoveredEmails = [];\n\nfor (const email of emailPatterns) {\n  // Simulate 40% success rate for email discovery\n  if (Math.random() > 0.6) {\n    discoveredEmails.push({\n      email: email,\n      source: ['Hunter.io', 'Apollo.io', 'Clearbit'][Math.floor(Math.random() * 3)],\n      confidence: Math.floor(Math.random() * 30) + 70,\n      verified: false,\n      pattern: email.split('@')[0]\n    });\n    break; // Use first successful pattern\n  }\n}\n\n// Generic company emails\nconst genericEmails = [\n  `info@${domain}`,\n  `contact@${domain}`,\n  `admin@${domain}`\n];\n\nif (discoveredEmails.length === 0) {\n  // Fallback to generic email\n  discoveredEmails.push({\n    email: genericEmails[0],\n    source: 'Generic Pattern',\n    confidence: 50,\n    verified: false,\n    isGeneric: true\n  });\n}\n\nconsole.log(`Found ${discoveredEmails.length} potential emails`);\n\nreturn [{\n  json: {\n    ...property,\n    discoveredEmails: discoveredEmails,\n    emailPatterns: emailPatterns,\n    discoveryStep: 'emails-found'\n  }\n}];"
+      },
+      "id": "email-discovery-003",
+      "name": "Email Pattern Discovery",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [850, 400]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Step 3: Phone number discovery\nconst property = $input.item.json;\nconst keyPerson = property.entityResolution.keyPerson;\n\nconsole.log(`Finding phone numbers for ${keyPerson.name}`);\n\n// Simulate TrueCaller API / NumVerify API calls\n// In production, call actual phone lookup APIs\n\nconst discoveredPhones = [];\n\n// Simulate 60% success rate for phone discovery\nif (Math.random() > 0.4) {\n  const areaCode = ['512', '737', '214', '469', '713', '281'][Math.floor(Math.random() * 6)];\n  const phoneNumber = `+1-${areaCode}-${Math.floor(Math.random() * 900) + 100}-${Math.floor(Math.random() * 9000) + 1000}`;\n  \n  discoveredPhones.push({\n    number: phoneNumber,\n    type: ['mobile', 'office'][Math.floor(Math.random() * 2)],\n    source: ['TrueCaller', 'NumVerify', 'Public Records'][Math.floor(Math.random() * 3)],\n    confidence: Math.floor(Math.random() * 20) + 75,\n    verified: false,\n    carrier: ['AT&T', 'Verizon', 'T-Mobile'][Math.floor(Math.random() * 3)]\n  });\n}\n\n// Office number (if available)\nif (Math.random() > 0.5) {\n  const officePhone = `+1-512-${Math.floor(Math.random() * 900) + 100}-${Math.floor(Math.random() * 9000) + 1000}`;\n  discoveredPhones.push({\n    number: officePhone,\n    type: 'office',\n    source: 'Business Directory',\n    confidence: 85,\n    verified: false\n  });\n}\n\nconsole.log(`Found ${discoveredPhones.length} phone numbers`);\n\nreturn [{\n  json: {\n    ...property,\n    discoveredPhones: discoveredPhones,\n    discoveryStep: 'phones-found'\n  }\n}];"
+      },
+      "id": "phone-discovery-003",
+      "name": "Phone Number Discovery",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1050, 400]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Step 4: LinkedIn profile matching via Proxycurl API\nconst property = $input.item.json;\nconst keyPerson = property.entityResolution.keyPerson;\nconst companyName = property.entityResolution.llcName;\n\nconsole.log(`Searching LinkedIn for ${keyPerson.name} at ${companyName}`);\n\n// Simulate Proxycurl API call\n// In production, call actual Proxycurl API\n\nconst linkedInProfile = {\n  found: Math.random() > 0.3, // 70% success rate\n  profileUrl: null,\n  headline: null,\n  experience: [],\n  email: null,\n  phone: null\n};\n\nif (linkedInProfile.found) {\n  const nameSlug = keyPerson.name.toLowerCase().replace(/\\s+/g, '-');\n  linkedInProfile.profileUrl = `https://linkedin.com/in/${nameSlug}-${Math.floor(Math.random() * 9999)}`;\n  linkedInProfile.headline = `${keyPerson.title} at ${companyName}`;\n  linkedInProfile.experience = [\n    {\n      title: keyPerson.title,\n      company: companyName,\n      duration: `${Math.floor(Math.random() * 10) + 1} years`\n    }\n  ];\n  \n  // Sometimes LinkedIn provides contact info\n  if (Math.random() > 0.7) {\n    linkedInProfile.email = property.discoveredEmails[0]?.email || null;\n  }\n  \n  if (Math.random() > 0.8) {\n    linkedInProfile.phone = property.discoveredPhones[0]?.number || null;\n  }\n}\n\nreturn [{\n  json: {\n    ...property,\n    linkedInProfile: linkedInProfile,\n    discoveryStep: 'linkedin-enriched'\n  }\n}];"
+      },
+      "id": "linkedin-enrichment-003",
+      "name": "LinkedIn Profile Matching",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1250, 400]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Step 5: Dun & Bradstreet financial history\nconst property = $input.item.json;\nconst companyName = property.entityResolution.llcName;\n\nconsole.log(`Fetching D&B data for ${companyName}`);\n\n// Simulate D&B API call\n// In production, call actual D&B API\n\nconst dnbData = {\n  found: Math.random() > 0.4, // 60% success rate\n  dunsNumber: null,\n  creditScore: null,\n  annualRevenue: null,\n  employeeCount: null,\n  riskAssessment: null,\n  paymentHistory: null,\n  yearsInBusiness: null\n};\n\nif (dnbData.found) {\n  dnbData.dunsNumber = `${Math.floor(Math.random() * 900000000) + 100000000}`;\n  dnbData.creditScore = Math.floor(Math.random() * 40) + 60; // 60-100\n  dnbData.annualRevenue = `$${Math.floor(Math.random() * 10) + 1}M - $${Math.floor(Math.random() * 50) + 10}M`;\n  dnbData.employeeCount = Math.floor(Math.random() * 50) + 5;\n  dnbData.riskAssessment = ['Low', 'Low-Medium', 'Medium'][Math.floor(Math.random() * 3)];\n  dnbData.paymentHistory = ['Satisfactory', 'Good', 'Excellent'][Math.floor(Math.random() * 3)];\n  dnbData.yearsInBusiness = Math.floor(Math.random() * 20) + 3;\n}\n\nreturn [{\n  json: {\n    ...property,\n    dnbData: dnbData,\n    discoveryStep: 'dnb-enriched'\n  }\n}];"
+      },
+      "id": "dnb-enrichment-003",
+      "name": "D&B Financial History",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1450, 400]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Consolidate all discovered contact information\nconst property = $input.item.json;\n\nconst contactData = {\n  propertyId: property.id,\n  ownerName: property.ownerName,\n  keyPerson: property.entityResolution.keyPerson,\n  \n  // Contact information\n  emails: property.discoveredEmails || [],\n  phones: property.discoveredPhones || [],\n  \n  // Social profiles\n  linkedIn: property.linkedInProfile || {},\n  \n  // Business intelligence\n  companyDomain: property.companyDomain,\n  dnbData: property.dnbData || {},\n  \n  // Discovery metadata\n  discoveryComplete: true,\n  discoveredAt: new Date().toISOString(),\n  totalContactsFound: (property.discoveredEmails?.length || 0) + (property.discoveredPhones?.length || 0),\n  \n  // Quality score\n  contactQuality: calculateQualityScore(property)\n};\n\nfunction calculateQualityScore(prop) {\n  let score = 0;\n  \n  // Email quality\n  const emails = prop.discoveredEmails || [];\n  if (emails.length > 0 && !emails[0].isGeneric) {\n    score += 40;\n  } else if (emails.length > 0) {\n    score += 20;\n  }\n  \n  // Phone quality\n  const phones = prop.discoveredPhones || [];\n  if (phones.length > 0) {\n    score += 30;\n  }\n  \n  // LinkedIn presence\n  if (prop.linkedInProfile?.found) {\n    score += 20;\n  }\n  \n  // D&B data\n  if (prop.dnbData?.found) {\n    score += 10;\n  }\n  \n  return score;\n}\n\nconst qualityScore = contactData.contactQuality;\nlet qualityTier = 'Low';\nif (qualityScore >= 80) qualityTier = 'Excellent';\nelse if (qualityScore >= 60) qualityTier = 'Good';\nelse if (qualityScore >= 40) qualityTier = 'Fair';\n\ncontactData.qualityTier = qualityTier;\n\nconsole.log(`Contact discovery complete. Quality: ${qualityTier} (${qualityScore}/100)`);\n\nreturn [{ json: contactData }];"
+      },
+      "id": "consolidate-contacts-003",
+      "name": "Consolidate Contact Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1650, 400]
+    },
+    {
+      "parameters": {},
+      "id": "aggregate-results-003",
+      "name": "Aggregate All Results",
+      "type": "n8n-nodes-base.aggregate",
+      "typeVersion": 1,
+      "position": [1850, 400]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Prepare batch for email verification\nconst contacts = $input.all().map(item => item.json);\n\n// Extract all emails for verification\nconst emailsForVerification = [];\n\ncontacts.forEach(contact => {\n  contact.emails.forEach(emailData => {\n    emailsForVerification.push({\n      propertyId: contact.propertyId,\n      email: emailData.email,\n      source: emailData.source,\n      confidence: emailData.confidence,\n      personName: contact.keyPerson.name\n    });\n  });\n});\n\nconst result = {\n  batchId: `verification-${Date.now()}`,\n  totalContacts: contacts.length,\n  totalEmails: emailsForVerification.length,\n  contacts: contacts,\n  emailsForVerification: emailsForVerification,\n  timestamp: new Date().toISOString(),\n  nextStep: 'email-verification'\n};\n\nconsole.log(`Prepared ${emailsForVerification.length} emails for verification`);\n\nreturn [{ json: result }];"
+      },
+      "id": "prepare-verification-003",
+      "name": "Prepare Email Verification Batch",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2050, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.WEBHOOK_URL_EMAIL_VERIFICATION }}",
+        "options": {
+          "timeout": 30000
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "batchId",
+              "value": "={{ $json.batchId }}"
+            },
+            {
+              "name": "emails",
+              "value": "={{ JSON.stringify($json.emailsForVerification) }}"
+            }
+          ]
+        }
+      },
+      "id": "trigger-verification-003",
+      "name": "Trigger Email Verification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2250, 400]
+    },
+    {
+      "parameters": {
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "respond-webhook-003",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [2450, 400]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Fetch Properties Without Contacts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Properties Without Contacts": {
+      "main": [
+        [
+          {
+            "node": "Extract Company Domain",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Company Domain": {
+      "main": [
+        [
+          {
+            "node": "Email Pattern Discovery",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email Pattern Discovery": {
+      "main": [
+        [
+          {
+            "node": "Phone Number Discovery",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Phone Number Discovery": {
+      "main": [
+        [
+          {
+            "node": "LinkedIn Profile Matching",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LinkedIn Profile Matching": {
+      "main": [
+        [
+          {
+            "node": "D&B Financial History",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "D&B Financial History": {
+      "main": [
+        [
+          {
+            "node": "Consolidate Contact Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consolidate Contact Data": {
+      "main": [
+        [
+          {
+            "node": "Aggregate All Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate All Results": {
+      "main": [
+        [
+          {
+            "node": "Prepare Email Verification Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Email Verification Batch": {
+      "main": [
+        [
+          {
+            "node": "Trigger Email Verification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Trigger Email Verification": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "PropFlow Capital",
+      "id": "propflow-tag-001"
+    },
+    {
+      "name": "Enrichment Layer",
+      "id": "enrichment-tag-001"
+    }
+  ]
+}
