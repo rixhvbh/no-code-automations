@@ -3,6 +3,19 @@
   "nodes": [
     {
       "parameters": {
+        "content": "## 🎯 CANDIDATE DEDUPLICATION WORKFLOW\n\nThis automation cleans up duplicate candidate data from job boards, uploads, and ATS exports.\n\n**What it does:**\n• Finds & merges duplicates using smart matching\n• Enriches profiles with LinkedIn, company info, and skills\n• Scores candidates and assigns them to recruiters\n• Syncs everything to your ATS and logs activity\n\n**Processing Time:** ~60 seconds per 100 candidates",
+        "height": 280,
+        "width": 400,
+        "color": 4
+      },
+      "id": "note-overview",
+      "name": "Note - Overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [200, 80]
+    },
+    {
+      "parameters": {
         "httpMethod": "POST",
         "path": "candidate-deduplication-enrichment",
         "responseMode": "responseNode",
@@ -12,8 +25,21 @@
       "name": "Webhook Trigger",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2,
-      "position": [240, 300],
+      "position": [240, 400],
       "webhookId": "candidate-dedup-webhook"
+    },
+    {
+      "parameters": {
+        "content": "## ✅ STEP 1: INPUT CLEANUP\n\nChecks incoming candidates for:\n• Required fields (name, email)\n• Valid email format\n• Data type correctness\n\nThen standardizes names, emails, and phone numbers to make duplicate detection more accurate.\n\n⚠️ Invalid records are filtered out but logged.",
+        "height": 240,
+        "width": 380,
+        "color": 5
+      },
+      "id": "note-validation",
+      "name": "Note - Validation",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [440, 80]
     },
     {
       "parameters": {
@@ -23,7 +49,7 @@
       "name": "Input Validation",
       "type": "n8n-nodes-base.function",
       "typeVersion": 1,
-      "position": [460, 300]
+      "position": [460, 400]
     },
     {
       "parameters": {
@@ -33,7 +59,20 @@
       "name": "Normalize Fields",
       "type": "n8n-nodes-base.function",
       "typeVersion": 1,
-      "position": [680, 300]
+      "position": [680, 400]
+    },
+    {
+      "parameters": {
+        "content": "## 🔍 STEP 2: FIND DUPLICATES\n\nCompares new candidates against existing database:\n\n**Matching Rules:**\n1. Exact email match → Always a duplicate\n2. Name similarity >85% + same phone → Duplicate\n3. Otherwise → Treat as new candidate\n\nUses **Levenshtein Distance** algorithm (measures how similar two names are, letter by letter).",
+        "height": 260,
+        "width": 420,
+        "color": 5
+      },
+      "id": "note-duplicate-detection",
+      "name": "Note - Duplicate Detection",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [900, 80]
     },
     {
       "parameters": {
@@ -48,7 +87,7 @@
       "name": "Load Existing Database",
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4,
-      "position": [900, 300],
+      "position": [900, 400],
       "credentials": {
         "googleSheetsOAuth2Api": {
           "id": "google-sheets-credential",
@@ -64,7 +103,7 @@
       "name": "Fuzzy Matching Algorithm",
       "type": "n8n-nodes-base.function",
       "typeVersion": 1,
-      "position": [1120, 300]
+      "position": [1120, 400]
     },
     {
       "parameters": {
@@ -74,7 +113,7 @@
       "name": "Split Results",
       "type": "n8n-nodes-base.function",
       "typeVersion": 1,
-      "position": [1340, 300]
+      "position": [1340, 400]
     },
     {
       "parameters": {
@@ -91,7 +130,20 @@
       "name": "Route: Duplicate?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 1,
-      "position": [1560, 300]
+      "position": [1560, 400]
+    },
+    {
+      "parameters": {
+        "content": "## 🔄 DUPLICATE FOUND PATH\n\nWhen a duplicate is detected:\n• Combines old + new data (keeps newest info)\n• Fills in any missing fields from either record\n• Updates the \"last modified\" timestamp\n• Skips re-enrichment (we already have their data)\n\nThen jumps straight to scoring.",
+        "height": 220,
+        "width": 340,
+        "color": 6
+      },
+      "id": "note-duplicate-path",
+      "name": "Note - Duplicate Path",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [1760, 80]
     },
     {
       "parameters": {
@@ -101,7 +153,20 @@
       "name": "Merge Records",
       "type": "n8n-nodes-base.function",
       "typeVersion": 1,
-      "position": [1780, 200]
+      "position": [1780, 240]
+    },
+    {
+      "parameters": {
+        "content": "## ✨ STEP 3: ENRICH NEW CANDIDATES\n\nFor brand new candidates, gather extra info:\n\n📧 **Email Check:** Verify it's deliverable (NeverBounce)\n🏢 **Company Data:** Get size, industry, logo (Clearbit)\n💼 **LinkedIn:** Search for profile (Proxycurl)\n🤖 **AI Skills:** Extract from resume (GPT-4)\n🏷️ **Job Title:** Standardize to categories (GPT-4)\n\n⚠️ If any service fails, we continue anyway (no blocking).",
+        "height": 280,
+        "width": 500,
+        "color": 5
+      },
+      "id": "note-enrichment",
+      "name": "Note - Enrichment Pipeline",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [2200, 700]
     },
     {
       "parameters": {
@@ -139,7 +204,7 @@
       "name": "Check Email Validity",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.1,
-      "position": [1780, 400],
+      "position": [1780, 560],
       "continueOnFail": true
     },
     {
@@ -150,7 +215,7 @@
       "name": "Parse Email Result",
       "type": "n8n-nodes-base.function",
       "typeVersion": 1,
-      "position": [2000, 400]
+      "position": [2000, 560]
     },
     {
       "parameters": {
@@ -175,7 +240,7 @@
       "name": "Enrich Company Data",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.1,
-      "position": [2220, 400],
+      "position": [2220, 560],
       "continueOnFail": true
     },
     {
@@ -186,7 +251,7 @@
       "name": "Parse Company Data",
       "type": "n8n-nodes-base.function",
       "typeVersion": 1,
-      "position": [2440, 400]
+      "position": [2440, 560]
     },
     {
       "parameters": {
@@ -211,7 +276,7 @@
       "name": "Find LinkedIn Profile",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.1,
-      "position": [2660, 400],
+      "position": [2660, 560],
       "continueOnFail": true
     },
     {
@@ -222,7 +287,7 @@
       "name": "Parse LinkedIn Data",
       "type": "n8n-nodes-base.function",
       "typeVersion": 1,
-      "position": [2880, 400]
+      "position": [2880, 560]
     },
     {
       "parameters": {
@@ -237,7 +302,7 @@
       "name": "Extract Skills from Resume",
       "type": "n8n-nodes-base.openAi",
       "typeVersion": 1.3,
-      "position": [3100, 400],
+      "position": [3100, 560],
       "credentials": {
         "openAiApi": {
           "id": "openai-credential",
@@ -254,7 +319,7 @@
       "name": "Parse Extracted Skills",
       "type": "n8n-nodes-base.function",
       "typeVersion": 1,
-      "position": [3320, 400]
+      "position": [3320, 560]
     },
     {
       "parameters": {
@@ -269,7 +334,7 @@
       "name": "Standardize Job Titles",
       "type": "n8n-nodes-base.openAi",
       "typeVersion": 1.3,
-      "position": [3540, 400],
+      "position": [3540, 560],
       "credentials": {
         "openAiApi": {
           "id": "openai-credential",
@@ -277,6 +342,19 @@
         }
       },
       "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "content": "## 🎯 STEP 4: SCORE & ASSIGN\n\nEvery candidate gets a score (0-100 points):\n• **Completeness:** Email, phone, LinkedIn, resume (40 pts)\n• **Experience:** Years in the field (30 pts)\n• **Engagement:** Company, location, referral (30 pts)\n\n**Tier Assignment:**\n• Tier A (80+) → Senior recruiter\n• Tier B (60-79) → Mid-level recruiter\n• Tier C (<60) → Junior recruiter pool\n\nAlso tagged for marketing campaigns.",
+        "height": 280,
+        "width": 440,
+        "color": 5
+      },
+      "id": "note-scoring",
+      "name": "Note - Scoring & Routing",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [3760, 80]
     },
     {
       "parameters": {
@@ -307,6 +385,19 @@
       "type": "n8n-nodes-base.function",
       "typeVersion": 1,
       "position": [4200, 400]
+    },
+    {
+      "parameters": {
+        "content": "## 💾 STEP 5: SAVE & SYNC\n\nUpdates Master Candidate Database (Google Sheets):\n• If email exists → Update the record\n• If new → Create new row\n\nThen syncs to your ATS (recruiting software) via API.\n\n⚡ Only Tier A and B sent to ATS.\n⚡ Retries 3 times if Google Sheets is busy.",
+        "height": 240,
+        "width": 380,
+        "color": 5
+      },
+      "id": "note-database-sync",
+      "name": "Note - Database Sync",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [4420, 80]
     },
     {
       "parameters": {
@@ -368,6 +459,19 @@
     },
     {
       "parameters": {
+        "content": "## 📊 STEP 6: LOG & RESPOND\n\nLogs execution summary to Activity Log sheet:\n• Total uploaded, duplicates found, new candidates\n• Tier breakdown (A/B/C counts)\n• Enrichment success rates\n\nThen sends success response:\n**\"78 uploaded, 12 duplicates, 66 new\"**\n\n✅ Workflow complete!",
+        "height": 240,
+        "width": 360,
+        "color": 5
+      },
+      "id": "note-logging",
+      "name": "Note - Logging & Response",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [4860, 80]
+    },
+    {
+      "parameters": {
         "functionCode": "// Aggregate all results for logging\nconst allItems = $input.all();\n\nlet totalUploaded = 0;\nlet duplicatesFound = 0;\nlet newCandidates = 0;\nlet tierACandidates = 0;\nlet tierBCandidates = 0;\nlet tierCCandidates = 0;\nlet emailsValidated = 0;\nlet linkedinFound = 0;\nlet skillsExtracted = 0;\n\nfor (const item of allItems) {\n  totalUploaded++;\n  \n  if (item.json.action === 'updated') {\n    duplicatesFound++;\n  } else {\n    newCandidates++;\n  }\n  \n  if (item.json.candidate_tier === 'A') tierACandidates++;\n  if (item.json.candidate_tier === 'B') tierBCandidates++;\n  if (item.json.candidate_tier === 'C') tierCCandidates++;\n  \n  if (item.json.email_status === 'valid') emailsValidated++;\n  if (item.json.linkedin_url) linkedinFound++;\n  if (item.json.extracted_skills) skillsExtracted++;\n}\n\nconst batchId = allItems[0]?.json?.batch_id || `batch_${Date.now()}`;\nconst uploadedBy = allItems[0]?.json?.uploaded_by || 'system';\n\nreturn [{\n  json: {\n    timestamp: new Date().toISOString(),\n    workflow: 'candidate-deduplication-enrichment',\n    status: 'success',\n    total_uploaded: totalUploaded,\n    duplicates_found: duplicatesFound,\n    new_candidates: newCandidates,\n    tier_a_count: tierACandidates,\n    tier_b_count: tierBCandidates,\n    tier_c_count: tierCCandidates,\n    emails_validated: emailsValidated,\n    linkedin_found: linkedinFound,\n    skills_extracted: skillsExtracted,\n    uploaded_by: uploadedBy,\n    batch_id: batchId,\n    execution_time_ms: 0 // Will be calculated by n8n\n  }\n}];"
       },
       "id": "prepare-log-023",
@@ -388,13 +492,23 @@
       "name": "Log Activity",
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4,
-      "position": [5080, 400],
+      "position": [5080, 480],
       "credentials": {
         "googleSheetsOAuth2Api": {
           "id": "google-sheets-credential",
           "name": "Google Sheets Account"
         }
       }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Format final response\nconst logData = $input.first().json;\n\nconst response = {\n  success: true,\n  message: `${logData.total_uploaded} uploaded, ${logData.duplicates_found} duplicates, ${logData.new_candidates} new`,\n  details: {\n    total_uploaded: logData.total_uploaded,\n    duplicates_merged: logData.duplicates_found,\n    new_candidates: logData.new_candidates,\n    tier_breakdown: {\n      A: logData.tier_a_count,\n      B: logData.tier_b_count,\n      C: logData.tier_c_count\n    },\n    enrichment_summary: {\n      emails_validated: logData.emails_validated,\n      linkedin_found: logData.linkedin_found,\n      skills_extracted: logData.skills_extracted\n    },\n    batch_id: logData.batch_id,\n    next_steps: 'Review Tier A candidates in ATS dashboard'\n  },\n  timestamp: logData.timestamp\n};\n\nreturn [{ json: response }];"
+      },
+      "id": "format-response-026",
+      "name": "Format Response",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [5080, 320]
     },
     {
       "parameters": {
@@ -417,16 +531,6 @@
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
       "position": [5300, 400]
-    },
-    {
-      "parameters": {
-        "functionCode": "// Format final response\nconst logData = $input.first().json;\n\nconst response = {\n  success: true,\n  message: `${logData.total_uploaded} uploaded, ${logData.duplicates_found} duplicates, ${logData.new_candidates} new`,\n  details: {\n    total_uploaded: logData.total_uploaded,\n    duplicates_merged: logData.duplicates_found,\n    new_candidates: logData.new_candidates,\n    tier_breakdown: {\n      A: logData.tier_a_count,\n      B: logData.tier_b_count,\n      C: logData.tier_c_count\n    },\n    enrichment_summary: {\n      emails_validated: logData.emails_validated,\n      linkedin_found: logData.linkedin_found,\n      skills_extracted: logData.skills_extracted\n    },\n    batch_id: logData.batch_id,\n    next_steps: 'Review Tier A candidates in ATS dashboard'\n  },\n  timestamp: logData.timestamp\n};\n\nreturn [{ json: response }];"
-      },
-      "id": "format-response-026",
-      "name": "Format Response",
-      "type": "n8n-nodes-base.function",
-      "typeVersion": 1,
-      "position": [5300, 300]
     }
   ],
   "connections": {
@@ -725,6 +829,6 @@
   "staticData": null,
   "tags": [],
   "triggerCount": 1,
-  "updatedAt": "2025-11-18T10:00:00.000Z",
-  "versionId": "workflow-v1"
+  "updatedAt": "2025-11-18T12:30:00.000Z",
+  "versionId": "workflow-v1.1-with-notes"
 }
