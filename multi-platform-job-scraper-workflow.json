@@ -3,6 +3,90 @@
   "nodes": [
     {
       "parameters": {
+        "content": "## 🎯 MULTI-PLATFORM JOB SCRAPER\n\nThis workflow automatically finds job postings from 3 major job boards:\n• **Indeed**\n• **ZipRecruiter**\n• **Glassdoor**\n\nIt runs every 6 hours, removes duplicates, and saves clean data to Google Sheets.\nYou'll get a Slack notification with the results each time it runs.\n\n💡 **TIP:** Click \"Execute Workflow\" to test manually anytime!",
+        "height": 280,
+        "width": 400
+      },
+      "id": "sticky-note-001",
+      "name": "Sticky Note - Overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [200, 100]
+    },
+    {
+      "parameters": {
+        "content": "## ⚙️ SETUP CHECKLIST\n\nBefore first run, configure:\n\n☐ **Proxy API Keys**\n   Nodes: Indeed/ZipRecruiter/Glassdoor - Proxy Setup\n   Replace YOUR_SCRAPERAPI_KEY\n\n☐ **Google Sheets ID**\n   Nodes: Append to Google Sheets, Log to Activity Sheet\n   Add your spreadsheet ID\n\n☐ **Slack Channel**\n   Nodes: Send Slack Alert, Send Error Alert\n   Set your channel (e.g., #job-scraper)\n\n☐ **Credentials**\n   - Connect Google Sheets OAuth2\n   - Connect Slack OAuth2\n\n✅ **Then click \"Execute Workflow\" to test!**",
+        "height": 420,
+        "width": 350
+      },
+      "id": "sticky-note-002",
+      "name": "Sticky Note - Setup Checklist",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [200, 950]
+    },
+    {
+      "parameters": {
+        "content": "## ⏰ TRIGGER & SEARCH CONFIG\n\n**Schedule:** Runs automatically every 6 hours\n(You can also trigger manually)\n\n**Search Settings:**\n→ Change job title, location, and platforms in\n   \"Search Parameters Input\" node\n→ Default: \"Software Engineer\" in \"Remote\"\n\n**How it works:**\n1. Trigger activates on schedule\n2. Search parameters are configured\n3. Split by platform routes to 3 scrapers",
+        "height": 320,
+        "width": 380
+      },
+      "id": "sticky-note-003",
+      "name": "Sticky Note - Trigger Section",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [200, 580]
+    },
+    {
+      "parameters": {
+        "content": "## 🔄 PARALLEL SCRAPING ENGINE\n\nThese 3 branches work at the **SAME TIME** (parallel processing):\n\n**1️⃣ INDEED BRANCH** (Top)\n   • Rotating proxies avoid blocks\n   • Grabs: job titles, companies, locations\n   • Parses HTML and cleans data\n\n**2️⃣ ZIPRECRUITER BRANCH** (Middle)\n   • Same process, different website\n\n**3️⃣ GLASSDOOR BRANCH** (Bottom)\n   • Same process, different website\n\nEach branch is **INDEPENDENT** - if one fails, others keep working!\n\n⚡ **Speed:** 30 seconds total instead of 90 seconds running one-by-one",
+        "height": 400,
+        "width": 420
+      },
+      "id": "sticky-note-004",
+      "name": "Sticky Note - Scraping Branches",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [850, -100]
+    },
+    {
+      "parameters": {
+        "content": "## 🔐 PROXY ROTATION SYSTEM\n\n**Why proxies?**\nJob boards block scrapers making too many requests.\n\n**Our solution:**\n• Rotate between 3 proxy providers\n• Change user agents (browser fingerprints)\n• Add delays between requests\n• Retry 3 times if request fails (2s wait)\n\n**Result:** Looks like a regular person browsing,\nnot a bot! Reliable scraping without blocks 🎯\n\n**Timeout:** 30 seconds per request",
+        "height": 340,
+        "width": 350
+      },
+      "id": "sticky-note-005",
+      "name": "Sticky Note - Proxy Explained",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [1050, -100]
+    },
+    {
+      "parameters": {
+        "content": "## 🧹 DATA CLEANUP ZONE\n\nAfter collecting jobs from all 3 platforms:\n\n**1. MERGE:** Combine all jobs into one list\n\n**2. REMOVE DUPLICATES:** Same job on multiple sites?\n   Keep only one copy (uses smart matching)\n\n**3. QUALITY CHECK:** Filter incomplete jobs\n   Must have: title, company name, URL\n\n**4. ENRICH:** Add company info (logo, industry)\n\n**Result:** Clean, unique job listings ready to save!",
+        "height": 340,
+        "width": 380
+      },
+      "id": "sticky-note-006",
+      "name": "Sticky Note - Data Cleanup",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [1700, 100]
+    },
+    {
+      "parameters": {
+        "content": "## 💾 SAVE & NOTIFY\n\n**GOOGLE SHEETS:**\n✓ Jobs saved to \"Jobs\" sheet\n✓ Execution logs saved to \"Activity_Log\" sheet\n✓ If job exists → UPDATE it\n✓ If job is new → ADD it\n\n**SLACK ALERT:**\n✓ Summary: \"Found 47 jobs, 12 are new\"\n✓ Breakdown by platform\n✓ Success ✅ or Warning ⚠️ status\n\n**🚨 ERROR MONITORING:**\nIf >20% scraping fails →\nCritical alert sent to Slack",
+        "height": 380,
+        "width": 380
+      },
+      "id": "sticky-note-007",
+      "name": "Sticky Note - Save & Notify",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [2800, 100]
+    },
+    {
+      "parameters": {
         "rule": {
           "interval": [
             {
@@ -16,7 +100,7 @@
       "name": "Schedule Trigger",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
-      "position": [240, 300],
+      "position": [250, 450],
       "notes": "Runs every 6 hours - can also be triggered manually"
     },
     {
@@ -27,8 +111,8 @@
       "name": "Search Parameters Input",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [440, 300],
-      "notes": "Configure job search parameters with validation"
+      "position": [450, 450],
+      "notes": "Configure job search parameters - edit defaults here"
     },
     {
       "parameters": {
@@ -100,8 +184,8 @@
       "name": "Split by Platform",
       "type": "n8n-nodes-base.switch",
       "typeVersion": 3.2,
-      "position": [640, 300],
-      "notes": "Route to different platform scrapers"
+      "position": [650, 450],
+      "notes": "Routes to different platform scrapers"
     },
     {
       "parameters": {
@@ -111,8 +195,8 @@
       "name": "Indeed - Proxy Setup",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [840, 100],
-      "notes": "Setup proxy rotation for Indeed scraping"
+      "position": [900, 350],
+      "notes": "⚙️ CONFIGURE: Add your proxy API key here"
     },
     {
       "parameters": {
@@ -155,8 +239,8 @@
       "name": "Indeed - HTTP Request",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1040, 100],
-      "notes": "Scrape Indeed with retry logic"
+      "position": [1100, 350],
+      "notes": "Fetches Indeed jobs with retry logic"
     },
     {
       "parameters": {
@@ -166,19 +250,19 @@
       "name": "Indeed - Parse HTML",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1240, 100],
-      "notes": "Extract job data from Indeed HTML"
+      "position": [1300, 350],
+      "notes": "Extracts job data from HTML"
     },
     {
       "parameters": {
         "jsCode": "// Normalize Indeed Data\nconst jobs = $input.all();\nconst normalized = [];\n\nfor (const item of jobs) {\n  const job = item.json;\n  \n  // Skip error items\n  if (job.error) continue;\n  \n  // Standardize field names and structure\n  normalized.push({\n    json: {\n      id: job.job_id,\n      title: job.title,\n      company: job.company,\n      location: job.location,\n      description: job.description || '',\n      salary: job.salary || 'Not specified',\n      job_type: job.job_type || 'Full-time',\n      posted_date: job.posted_date || new Date().toISOString().split('T')[0],\n      url: job.url,\n      platform: 'Indeed',\n      scraped_at: job.scraped_at,\n      search_query: job.search_query,\n      search_location: job.search_location,\n      raw_data: job\n    }\n  });\n}\n\nconsole.log(`Indeed: Normalized ${normalized.length} jobs`);\nreturn normalized.length > 0 ? normalized : [{ json: { platform: 'Indeed', count: 0 } }];"
       },
       "id": "node-007",
-      "name": "Indeed - Normalize Data",
+      "name": "Indeed - Normalize",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1440, 100],
-      "notes": "Standardize Indeed job data structure"
+      "position": [1500, 350],
+      "notes": "Standardizes data structure"
     },
     {
       "parameters": {
@@ -188,8 +272,8 @@
       "name": "ZipRecruiter - Proxy Setup",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [840, 300],
-      "notes": "Setup proxy rotation for ZipRecruiter"
+      "position": [900, 550],
+      "notes": "⚙️ CONFIGURE: Add your proxy API key here"
     },
     {
       "parameters": {
@@ -220,8 +304,8 @@
       "name": "ZipRecruiter - HTTP Request",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1040, 300],
-      "notes": "Scrape ZipRecruiter with retry"
+      "position": [1100, 550],
+      "notes": "Fetches ZipRecruiter jobs"
     },
     {
       "parameters": {
@@ -231,19 +315,19 @@
       "name": "ZipRecruiter - Parse JSON",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1240, 300],
-      "notes": "Extract job data from ZipRecruiter"
+      "position": [1300, 550],
+      "notes": "Extracts job data"
     },
     {
       "parameters": {
         "jsCode": "// Normalize ZipRecruiter Data\nconst jobs = $input.all();\nconst normalized = [];\n\nfor (const item of jobs) {\n  const job = item.json;\n  if (job.error) continue;\n  \n  normalized.push({\n    json: {\n      id: job.job_id,\n      title: job.title,\n      company: job.company,\n      location: job.location,\n      description: job.description || '',\n      salary: job.salary || 'Not specified',\n      job_type: job.job_type || 'Full-time',\n      posted_date: job.posted_date || new Date().toISOString().split('T')[0],\n      url: job.url,\n      platform: 'ZipRecruiter',\n      scraped_at: job.scraped_at,\n      search_query: job.search_query,\n      search_location: job.search_location,\n      raw_data: job\n    }\n  });\n}\n\nconsole.log(`ZipRecruiter: Normalized ${normalized.length} jobs`);\nreturn normalized.length > 0 ? normalized : [{ json: { platform: 'ZipRecruiter', count: 0 } }];"
       },
       "id": "node-011",
-      "name": "ZipRecruiter - Normalize Data",
+      "name": "ZipRecruiter - Normalize",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1440, 300],
-      "notes": "Standardize ZipRecruiter data"
+      "position": [1500, 550],
+      "notes": "Standardizes data structure"
     },
     {
       "parameters": {
@@ -253,8 +337,8 @@
       "name": "Glassdoor - Proxy Setup",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [840, 500],
-      "notes": "Setup proxy rotation for Glassdoor"
+      "position": [900, 750],
+      "notes": "⚙️ CONFIGURE: Add your proxy API key here"
     },
     {
       "parameters": {
@@ -285,8 +369,8 @@
       "name": "Glassdoor - HTTP Request",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1040, 500],
-      "notes": "Scrape Glassdoor with retry"
+      "position": [1100, 750],
+      "notes": "Fetches Glassdoor jobs"
     },
     {
       "parameters": {
@@ -296,19 +380,19 @@
       "name": "Glassdoor - Parse HTML",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1240, 500],
-      "notes": "Extract job data from Glassdoor"
+      "position": [1300, 750],
+      "notes": "Extracts job data"
     },
     {
       "parameters": {
         "jsCode": "// Normalize Glassdoor Data\nconst jobs = $input.all();\nconst normalized = [];\n\nfor (const item of jobs) {\n  const job = item.json;\n  if (job.error) continue;\n  \n  normalized.push({\n    json: {\n      id: job.job_id,\n      title: job.title,\n      company: job.company,\n      location: job.location,\n      description: job.description || '',\n      salary: job.salary || 'Not specified',\n      job_type: job.job_type || 'Full-time',\n      posted_date: job.posted_date || new Date().toISOString().split('T')[0],\n      url: job.url,\n      platform: 'Glassdoor',\n      scraped_at: job.scraped_at,\n      search_query: job.search_query,\n      search_location: job.search_location,\n      raw_data: job\n    }\n  });\n}\n\nconsole.log(`Glassdoor: Normalized ${normalized.length} jobs`);\nreturn normalized.length > 0 ? normalized : [{ json: { platform: 'Glassdoor', count: 0 } }];"
       },
       "id": "node-015",
-      "name": "Glassdoor - Normalize Data",
+      "name": "Glassdoor - Normalize",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1440, 500],
-      "notes": "Standardize Glassdoor data"
+      "position": [1500, 750],
+      "notes": "Standardizes data structure"
     },
     {
       "parameters": {
@@ -320,8 +404,8 @@
       "name": "Merge All Results",
       "type": "n8n-nodes-base.merge",
       "typeVersion": 3,
-      "position": [1640, 300],
-      "notes": "Combine results from all platforms"
+      "position": [1750, 550],
+      "notes": "Combines results from all 3 platforms"
     },
     {
       "parameters": {
@@ -331,8 +415,8 @@
       "name": "Deduplication Logic",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1840, 300],
-      "notes": "Remove duplicate job postings"
+      "position": [1950, 550],
+      "notes": "Removes duplicate job postings using smart matching"
     },
     {
       "parameters": {
@@ -375,8 +459,8 @@
       "name": "Data Quality Check",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
-      "position": [2040, 300],
-      "notes": "Filter incomplete job records"
+      "position": [2150, 550],
+      "notes": "Filters out incomplete job records"
     },
     {
       "parameters": {
@@ -386,8 +470,8 @@
       "name": "Enrich Company Data",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [2240, 300],
-      "notes": "Add company information via Clearbit API"
+      "position": [2350, 550],
+      "notes": "Adds company info (ready for Clearbit API integration)"
     },
     {
       "parameters": {
@@ -439,14 +523,14 @@
       "name": "Append to Google Sheets",
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.5,
-      "position": [2440, 300],
+      "position": [2600, 550],
       "credentials": {
         "googleSheetsOAuth2Api": {
           "id": "YOUR_GOOGLE_SHEETS_CREDENTIAL_ID",
           "name": "Google Sheets Account"
         }
       },
-      "notes": "Save jobs to Google Sheets with upsert"
+      "notes": "⚙️ CONFIGURE: Add your Google Sheets ID and credential"
     },
     {
       "parameters": {
@@ -456,8 +540,8 @@
       "name": "Prepare Activity Log",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [2640, 300],
-      "notes": "Create activity log entry with metrics"
+      "position": [2850, 550],
+      "notes": "Creates execution metrics for tracking"
     },
     {
       "parameters": {
@@ -495,14 +579,14 @@
       "name": "Log to Activity Sheet",
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.5,
-      "position": [2840, 300],
+      "position": [3100, 550],
       "credentials": {
         "googleSheetsOAuth2Api": {
           "id": "YOUR_GOOGLE_SHEETS_CREDENTIAL_ID",
           "name": "Google Sheets Account"
         }
       },
-      "notes": "Log execution metrics to Activity sheet"
+      "notes": "⚙️ CONFIGURE: Add your Google Sheets ID"
     },
     {
       "parameters": {
@@ -512,8 +596,8 @@
       "name": "Format Slack Message",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [3040, 300],
-      "notes": "Create formatted Slack notification"
+      "position": [3350, 550],
+      "notes": "Creates rich Slack notification"
     },
     {
       "parameters": {
@@ -529,14 +613,14 @@
       "name": "Send Slack Alert",
       "type": "n8n-nodes-base.slack",
       "typeVersion": 2.2,
-      "position": [3240, 300],
+      "position": [3600, 550],
       "credentials": {
         "slackOAuth2Api": {
           "id": "YOUR_SLACK_CREDENTIAL_ID",
           "name": "Slack Account"
         }
       },
-      "notes": "Send alert to Slack channel"
+      "notes": "⚙️ CONFIGURE: Set your Slack channel and credential"
     },
     {
       "parameters": {
@@ -563,8 +647,8 @@
       "name": "Error Rate Check",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
-      "position": [3440, 300],
-      "notes": "Check if error rate exceeds 20%"
+      "position": [3850, 550],
+      "notes": "Checks if error rate exceeds 20% threshold"
     },
     {
       "parameters": {
@@ -578,14 +662,14 @@
       "name": "Send Error Alert",
       "type": "n8n-nodes-base.slack",
       "typeVersion": 2.2,
-      "position": [3640, 200],
+      "position": [4050, 400],
       "credentials": {
         "slackOAuth2Api": {
           "id": "YOUR_SLACK_CREDENTIAL_ID",
           "name": "Slack Account"
         }
       },
-      "notes": "Alert if failures exceed 20%"
+      "notes": "⚙️ CONFIGURE: Set your Slack channel"
     }
   ],
   "connections": {
@@ -662,14 +746,14 @@
       "main": [
         [
           {
-            "node": "Indeed - Normalize Data",
+            "node": "Indeed - Normalize",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Indeed - Normalize Data": {
+    "Indeed - Normalize": {
       "main": [
         [
           {
@@ -706,14 +790,14 @@
       "main": [
         [
           {
-            "node": "ZipRecruiter - Normalize Data",
+            "node": "ZipRecruiter - Normalize",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "ZipRecruiter - Normalize Data": {
+    "ZipRecruiter - Normalize": {
       "main": [
         [
           {
@@ -750,14 +834,14 @@
       "main": [
         [
           {
-            "node": "Glassdoor - Normalize Data",
+            "node": "Glassdoor - Normalize",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Glassdoor - Normalize Data": {
+    "Glassdoor - Normalize": {
       "main": [
         [
           {
@@ -886,6 +970,6 @@
   "staticData": null,
   "tags": [],
   "triggerCount": 1,
-  "updatedAt": "2025-11-18T00:00:00.000Z",
+  "updatedAt": "2025-11-19T00:00:00.000Z",
   "versionId": "1"
 }
